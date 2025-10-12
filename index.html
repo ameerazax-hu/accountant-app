@@ -7,34 +7,30 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div id="loading-overlay" class="hidden">
-        <div class="loader"></div>
-    </div>
+    <div id="loading-overlay" class="hidden"><div class="loader"></div></div>
 
     <div id="login-section" class="container">
         <h1>تسجيل الدخول</h1>
         <form id="loginForm">
             <div class="input-group">
                 <label for="email">البريد الإلكتروني</label>
-                <input type="email" id="email" value="aliqueen2023@gmail.com" required>
+                <input type="email" id="email" value="" required>
             </div>
             <div class="input-group">
                 <label for="password">كلمة السر</label>
-                <input type="password" id="password" value="112233" required>
+                <input type="password" id="password" value="" required>
             </div>
             <button type="submit">دخول</button>
         </form>
         <div id="message"></div>
     </div>
 
-    <div id="app-container" class="hidden">
-        </div>
+    <div id="admin-container" class="hidden"></div>
+    <div id="rep-container" class="hidden"></div>
+    <div id="packer-container" class="hidden"></div>
 
     <div id="modal-container"></div>
-    
     <div id="toast" class="toast"></div>
-
     <script type="module" src="app.js"></script>
-
 </body>
 </html>
