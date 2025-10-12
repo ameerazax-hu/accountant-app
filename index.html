@@ -3,10 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>اختبار تسجيل الدخول وعرض المنتجات</title>
+    <title>نظام الإدارة</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <div id="loading-overlay" class="hidden">
+        <div class="loader"></div>
+    </div>
 
     <div id="login-section" class="container">
         <h1>تسجيل الدخول</h1>
@@ -24,14 +27,12 @@
         <div id="message"></div>
     </div>
 
-    <div id="products-section" class="container hidden">
-        <header>
-            <h1>قائمة المنتجات</h1>
-            <button id="logout-btn">تسجيل الخروج</button>
-        </header>
-        <div id="products-list-container">
-            </div>
-    </div>
+    <div id="app-container" class="hidden">
+        </div>
+
+    <div id="modal-container"></div>
+    
+    <div id="toast" class="toast"></div>
 
     <script type="module" src="app.js"></script>
 
