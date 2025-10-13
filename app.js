@@ -133,7 +133,9 @@ const getWaseetToken = async () => {
 
 
 const sendOrderToAlWaseet = async (orderData) => {
-    
+
+
+       console.log("WASEET PROXY CHECK: Function called.");
     const token = await getWaseetToken();
     if (!token) return { success: false, message: "تعذر الحصول على توكن التوثيق." };
 
@@ -1009,4 +1011,5 @@ const handleLogout = async () => {
     messageDiv.className = 'success';
     hideLoader();
 };
+
 
