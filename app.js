@@ -5,9 +5,25 @@ const SUPABASE_URL = 'https://iqfxbunxrnvmcsazmwvo.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlxZnhidW54cm52bWNzYXptd3ZvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjAxOTI1NDEsImV4cCI6MjA3NTc2ODU0MX0.uVj2ioxJ5oaPsxLVbCaN3h1C3T0Wt8AUyobc5nkIE5c';
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// هناااااااااااااا كود الوسييييييييييط 
+
+
+// ... (بعد Supabase Setup)
+
+// --- إعدادات شركة التوصيل الوسيط ---
+// لم تعد هناك حاجة لتعريف Username/Password هنا، يتم إرسال الطلبات إلى الخادم الوسيط
+const PROXY_BASE_URL = window.location.origin; // رابط تطبيقك المنشور (Vercel)
+
+let waseetToken = null; 
+
+// --- Global State ---
+// ...
+
+// فوووووووووووق كود الوسييييييييييط 
 // --- Global State ---
 let state = { products: [], users: [], sales: [], currentUser: null };
 let currentInvoiceItems = [];
+
 
 // --- DOM Elements ---
 const loginSection = document.getElementById('login-section');
@@ -76,6 +92,95 @@ const fetchAllData = async () => {
 };
 
 // =================================================================
+
+
+// الوسيططططططططط
+
+const getWaseetToken = async () => {
+    if (waseetToken) return waseetToken; 
+    
+    try {
+        const response = await fetch(`${PROXY_BASE_URL}/api/waseet-login`, {
+            method: 'POST',
+            // لا حاجة لإرسال البيانات، الخادم الوسيط يستخدم المتغيرات
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}) // إرسال جسم فارغ أو أي شيء يتوقعه الخادم
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.status === 'success' && data.token) {
+            waseetToken = data.token;
+            return waseetToken;
+        } else {
+            console.error("Waseet Login Error:", data.message || JSON.stringify(data));
+            throw new Error(`فشل في الحصول على توكن التوثيق: ${data.message || JSON.stringify(data)}`);
+        }
+    } catch (error) {
+        console.error("Waseet Login Connection Error:", error);
+        throw new Error("خطأ اتصال أثناء محاولة الحصول على توكن التوثيق.");
+    }
+};
+
+
+
+
+// الوسييييط فوق 
+
+
+// الوسيييييييييط تحت 
+
+
+
+const sendOrderToAlWaseet = async (orderData) => {
+    
+    const token = await getWaseetToken();
+    if (!token) return { success: false, message: "تعذر الحصول على توكن التوثيق." };
+
+    // نجهز حمولة JSON التي سنرسلها إلى الخادم الوسيط
+    const proxyPayload = {
+        token: token, 
+        client_name: orderData.customerName,
+        client_mobile: orderData.customerPhone, 
+        location: orderData.customerAddress,
+        type_name: 'بضائع متنوعة', 
+        items_number: orderData.currentInvoiceItems.length,
+        price: orderData.totalAmount, 
+        replacement: '0', 
+        city_id: '1',      
+        region_id: '1',    
+        package_size: '1', 
+        currentInvoiceItems: orderData.currentInvoiceItems // للمساعدة في الإرسال
+    };
+
+    try {
+        const response = await fetch(`${PROXY_BASE_URL}/api/waseet-create`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(proxyPayload),
+        });
+
+        const data = await response.json();
+
+        if (data.status === 'success' || data.success === true) {
+            return {
+                success: true,
+                trackingId: data.data.qr_id,
+                message: "تم الإرسال بنجاح."
+            };
+        } else {
+            console.error("Waseet API Error via Proxy:", data.message || JSON.stringify(data));
+            return { success: false, message: data.message || "فشل الإرسال. تحقق من البيانات." };
+        }
+
+    } catch (error) {
+        console.error("Waseet API Connection Error:", error);
+        return { success: false, message: "فشل الاتصال بالخادم الوسيط." };
+    }
+};
+
+
+// الوسيييط فوق
 // ===== ADMIN-SPECIFIC FUNCTIONS (UNCHANGED) ======================
 // =================================================================
 const renderAdminApp=async()=>{loginSection.classList.add("hidden"),adminContainer.classList.remove("hidden"),adminContainer.innerHTML=`<div class="container"><header class="app-header"><h1>لوحة تحكم المدير</h1><button id="logout-btn" class="button-danger">تسجيل الخروج</button></header><main><div class="tabs"><button class="tab-button active" data-tab="products">المنتجات</button><button class="tab-button" data-tab="users">المستخدمين</button></div><div id="content-area"></div></main></div>`,document.getElementById("logout-btn").addEventListener("click",handleLogout),document.querySelectorAll("#admin-container .tab-button").forEach((e=>{e.addEventListener("click",(()=>switchAdminTab(e.dataset.tab)))})),await fetchAllData(),switchAdminTab("products")},switchAdminTab=e=>{document.querySelectorAll("#admin-container .tab-button").forEach((t=>t.classList.toggle("active",t.dataset.tab===e)));const t=document.querySelector("#admin-container #content-area");"products"===e?renderProductsView(t):"users"===e&&renderUsersView(t)},renderProductsView=e=>{e.innerHTML=`<div class="content-header"><h2>قائمة المنتجات (${state.products.length})</h2><button id="add-product-btn">إضافة منتج جديد</button></div><table><thead><tr><th>صورة</th><th>الاسم</th><th>الكمية</th><th>سعر البيع للمندوب</th></tr></thead><tbody>${state.products.map((e=>`<tr><td><img class="table-img" src="${e.imageUrl||"https://placehold.co/100x100/e2e8f0/e2e8f0?text=."}" alt="${e.name}"></td><td>${e.name}</td><td>${e.quantity}</td><td>${e.repPrice} د.ع</td></tr>`)).join("")}</tbody></table>`,document.getElementById("add-product-btn").addEventListener("click",renderAddProductModal)},renderUsersView=e=>{const t=state.users.filter((e=>"admin"!==e.role));e.innerHTML=`<div class="content-header"><h2>قائمة المستخدمين (${t.length})</h2><button id="add-user-btn">إضافة مستخدم جديد</button></div><table><thead><tr><th>الاسم</th><th>البريد الإلكتروني</th><th>الصلاحية</th></tr></thead><tbody>${t.map((e=>`<tr><td>${e.name}</td><td>${e.email}</td><td>${"rep"===e.role?"مندوب":"مجهز"}</td></tr>`)).join("")}</tbody></table>`,document.getElementById("add-user-btn").addEventListener("click",renderAddUserModal)},renderAddProductModal=()=>{modalContainer.innerHTML=`<div id="product-modal" class="modal-backdrop"><div class="modal"><div class="modal-header"><h3>إضافة منتج جديد</h3></div><form id="product-form"><div class="input-group"><label>اسم المنتج</label><input type="text" id="product-name" required></div><div class="input-group"><label>صورة المنتج</label><input type="file" id="product-image-file" accept="image/*"></div><div class="input-group"><label>الكمية</label><input type="number" id="product-quantity" required></div><div class="input-group"><label>سعر الشراء</label><input type="number" id="product-cost" required></div><div class="input-group"><label>سعر البيع للمندوب</label><input type="number" id="product-rep-price" required></div><div class="input-group"><label>سعر البيع للزبون</label><input type="number" id="product-customer-price" required></div><div class="modal-footer"><button type="button" class="button-secondary" id="cancel-product-btn">إلغاء</button><button type="submit">حفظ المنتج</button></div></form></div></div>`,document.getElementById("product-form").addEventListener("submit",handleAddNewProduct),document.getElementById("cancel-product-btn").addEventListener("click",(()=>modalContainer.innerHTML=""))},renderAddUserModal=()=>{modalContainer.innerHTML=`<div id="user-modal" class="modal-backdrop"><div class="modal"><div class="modal-header"><h3>إضافة مستخدم جديد</h3></div><form id="user-form"><div class="input-group"><label>الاسم</label><input type="text" id="user-name" required></div><div class="input-group"><label>البريد الإلكتروني</label><input type="email" id="user-email" required></div><div class="input-group"><label>كلمة السر</label><input type="password" id="user-password" required></div><div class="input-group"><label>الصلاحية</label><select id="user-role"><option value="rep">مندوب</option><option value="packer">مجهز</option></select></div><div class="modal-footer"><button type="button" class="button-secondary" id="cancel-user-btn">إلغاء</button><button type="submit">حفظ المستخدم</button></div></form></div></div>`,document.getElementById("user-form").addEventListener("submit",handleAddNewUser),document.getElementById("cancel-user-btn").addEventListener("click",(()=>modalContainer.innerHTML=""))},handleAddNewProduct=async e=>{e.preventDefault(),showLoader();try{const e=document.getElementById("product-image-file").files[0];let t=null;if(e){const n=`public/${Date.now()}-${e.name}`,{error:a}=await supabase.storage.from("product_images").upload(n,e);if(a)throw a;const{data:r}=supabase.storage.from("product_images").getPublicUrl(n);t=r.publicUrl}const n={name:document.getElementById("product-name").value,quantity:parseInt(document.getElementById("product-quantity").value),costPrice:parseFloat(document.getElementById("product-cost").value),repPrice:parseFloat(document.getElementById("product-rep-price").value),customerPrice:parseFloat(document.getElementById("product-customer-price").value),imageUrl:t},{error:a}=await supabase.from("products").insert(n);if(a)throw a;showToast("تمت إضافة المنتج بنجاح."),modalContainer.innerHTML="",await fetchAllData(),switchAdminTab("products")}catch(e){showToast(`خطأ: ${e.details||e.message}`,!0)}finally{hideLoader()}},handleAddNewUser=async e=>{e.preventDefault(),showLoader();try{const e=document.getElementById("user-name").value,t=document.getElementById("user-email").value,n=document.getElementById("user-password").value,a=document.getElementById("user-role").value,{data:r,error:i}=await supabase.auth.signUp({email:t,password:n});if(i)throw i;const{error:o}=await supabase.from("users").insert({id:r.user.id,name:e,email:t,role:a});if(o)throw o;showToast("تمت إضافة المستخدم بنجاح."),modalContainer.innerHTML="",await fetchAllData(),switchAdminTab("users")}catch(e){showToast(`خطأ: ${e.details||e.message}`,!0)}finally{hideLoader()}};
@@ -855,6 +960,7 @@ const handleUpdateOrderStatus = async (event) => {
     }
 };
 
+
 // --- Authentication Flow ---
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -903,3 +1009,4 @@ const handleLogout = async () => {
     messageDiv.className = 'success';
     hideLoader();
 };
+
