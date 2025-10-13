@@ -186,9 +186,111 @@ th { font-weight: bold; color: #374151; }
 }
 .report-summary strong { color: #059669; font-size: 1.4rem; }
 
+/* === Responsive Design for All Devices === */
+
+/* For tablets and smaller devices (less than 900px) */
 @media (max-width: 900px) {
-    .rep-grid { grid-template-columns: 1fr; }
-    .product-grid { max-height: none; }
-    .content-header { flex-direction: column; align-items: flex-start; }
-    .content-header > div { margin-top: 1rem; }
+    .rep-grid { 
+        grid-template-columns: 1fr; /* Stack the product grid and invoice form */
+    }
+    .product-grid { 
+        max-height: none; /* Remove fixed height on mobile */
+    }
+    .content-header { 
+        flex-direction: column; 
+        align-items: flex-start;
+        gap: 1rem;
+    }
+    .content-header > div { 
+        margin-top: 0; /* Adjusted from 1rem to 0 for better alignment with gap */
+        width: 100%;
+    }
+}
+
+/* For mobile phones (less than 768px) */
+@media (max-width: 768px) {
+    body {
+        -webkit-text-size-adjust: 100%; /* Prevents iOS font size inflation */
+    }
+
+    .container {
+        margin: 0.5rem;   /* Reduce margin to use more screen space */
+        padding: 1rem;    /* Reduce internal padding */
+    }
+
+    /* Stack the main header items vertically */
+    .app-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.75rem;
+    }
+    
+    /* Make tabs scrollable horizontally if they don't fit */
+    .tabs {
+        overflow-x: auto;
+        white-space: nowrap;
+        -ms-overflow-style: none;  /* Hide scrollbar on IE and Edge */
+        scrollbar-width: none;  /* Hide scrollbar on Firefox */
+    }
+    .tabs::-webkit-scrollbar {
+        display: none; /* Hide scrollbar on Chrome, Safari, and Opera */
+    }
+
+    #login-section {
+        margin-top: 2rem;
+        padding: 1.5rem;
+        width: auto;
+        max-width: 90%;
+    }
+
+    /* --- Critical for Mobile: Make tables scrollable horizontally --- */
+    table {
+        display: block;
+        width: 100%;
+        overflow-x: auto; /* This allows the table to be scrolled left-to-right */
+        white-space: nowrap; /* Prevents table content from wrapping */
+    }
+    th, td {
+        white-space: nowrap; /* Ensure cell content does not wrap unnecessarily */
+    }
+    /* --- End of table fix --- */
+
+    /* Adjust product grid for smaller cards */
+    .product-grid {
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 0.75rem;
+    }
+
+    .product-card img {
+        height: 100px; /* Make product images smaller */
+    }
+
+    /* Adjust modals to fit smaller screens */
+    .modal {
+        width: 90%;
+        padding: 1.5rem;
+    }
+    
+    /* Stack modal buttons vertically for easier tapping */
+    .modal-footer {
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+    .modal-footer button {
+        width: 100%; 
+    }
+
+    /* Fix headers in Packer interface */
+    #packer-content-area .content-header,
+    #packer-content-area .content-header > div {
+        flex-direction: column;
+        align-items: stretch; /* Make items full-width */
+        width: 100%;
+        gap: 0.75rem;
+    }
+    #packer-content-area .content-header select,
+    #packer-content-area .content-header button {
+        width: 100%;
+        margin-left: 0;
+    }
 }
