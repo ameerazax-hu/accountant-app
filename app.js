@@ -72,12 +72,13 @@ const fetchAllData = async () => {
 // =================================================================
 // ===== ADMIN-SPECIFIC FUNCTIONS ==================================
 // =================================================================
-const renderAdminApp=async()=>{loginSection.classList.add("hidden"),adminContainer.classList.remove("hidden"),adminContainer.innerHTML=`<div class="container"><header class="app-header"><h1>لوحة تحكم المدير</h1><button id="logout-btn" class="button-danger">تسجيل الخروج</button></header><main><div class="tabs"><button class="tab-button active" data-tab="products">المنتجات</button><button class="tab-button" data-tab="users">المستخدمين</button></div><div id="content-area"></div></main></div>`,document.getElementById("logout-btn").addEventListener("click",handleLogout),document.querySelectorAll("#admin-container .tab-button").forEach((e=>{e.addEventListener("click",(()=>switchAdminTab(e.dataset.tab)))})),await fetchAllData(),switchAdminTab("products")},switchAdminTab=e=>{document.querySelectorAll("#admin-container .tab-button").forEach((t=>t.classList.toggle("active",t.dataset.tab===e)));const t=document.querySelector("#admin-container #content-area");"products"===e?renderProductsView(t):"users"===e&&renderUsersView(t)};
+const renderAdminApp = async () => { loginSection.classList.add("hidden"), adminContainer.classList.remove("hidden"), adminContainer.innerHTML = `<div class="container"><header class="app-header"><h1>لوحة تحكم المدير</h1><button id="logout-btn" class="button-danger">تسجيل الخروج</button></header><main><div class="tabs"><button class="tab-button active" data-tab="products">المنتجات</button><button class="tab-button" data-tab="users">المستخدمين</button><button class="tab-button" data-tab="reports">تقارير الأرباح</button></div><div id="content-area"></div></main></div>`, document.getElementById("logout-btn").addEventListener("click", handleLogout), document.querySelectorAll("#admin-container .tab-button").forEach((e => { e.addEventListener("click", (() => switchAdminTab(e.dataset.tab))) })), await fetchAllData(), switchAdminTab("products") };
+const switchAdminTab = e => { document.querySelectorAll("#admin-container .tab-button").forEach((t => t.classList.toggle("active", t.dataset.tab === e))); const t = document.querySelector("#admin-container #content-area"); "products" === e ? renderProductsView(t) : "users" === e ? renderUsersView(t) : "reports" === e && renderAdminReportsView(t) };
 
 let quantityChanges = {},
-renderProductsView = e => {
-    quantityChanges = {}; 
-    e.innerHTML = `
+    renderProductsView = e => {
+        quantityChanges = {};
+        e.innerHTML = `
         <div class="content-header">
             <h2>قائمة المنتجات (${state.products.length})</h2>
             <div>
@@ -108,58 +109,260 @@ renderProductsView = e => {
             </tbody>
         </table>
     `;
-    document.getElementById("add-product-btn").addEventListener("click", renderAddProductModal);
-    const saveChangesBtn = document.getElementById('save-quantity-changes-btn');
-    document.querySelectorAll('.quantity-input').forEach(input => {
-        input.addEventListener('change', (event) => {
-            const productId = event.target.dataset.productId;
-            const newQuantity = parseInt(event.target.value, 10);
-            if (!isNaN(newQuantity)) {
-                quantityChanges[productId] = newQuantity;
-                saveChangesBtn.classList.remove('hidden');
-            }
+        document.getElementById("add-product-btn").addEventListener("click", renderAddProductModal);
+        const saveChangesBtn = document.getElementById('save-quantity-changes-btn');
+        document.querySelectorAll('.quantity-input').forEach(input => {
+            input.addEventListener('change', (event) => {
+                const productId = event.target.dataset.productId;
+                const newQuantity = parseInt(event.target.value, 10);
+                if (!isNaN(newQuantity)) {
+                    quantityChanges[productId] = newQuantity;
+                    saveChangesBtn.classList.remove('hidden');
+                }
+            });
         });
+        saveChangesBtn.addEventListener('click', handleBulkQuantityUpdate);
+    },
+    handleBulkQuantityUpdate = async () => {
+        const changesCount = Object.keys(quantityChanges).length;
+        if (changesCount === 0) return showToast("لا توجد تغييرات لحفظها.", true);
+        const confirmed = await showConfirmationModal(`هل أنت متأكد من تحديث كمية ${changesCount} منتجات؟`);
+        if (!confirmed) return;
+        showLoader();
+        try {
+            const updatePromises = Object.entries(quantityChanges).map(([productId, quantity]) => {
+                return supabase.from('products').update({ quantity: quantity }).eq('id', productId);
+            });
+            const results = await Promise.all(updatePromises);
+            results.forEach(result => { if (result.error) throw result.error; });
+            showToast(`تم تحديث كمية ${changesCount} منتجات بنجاح.`);
+            await fetchAllData();
+            switchAdminTab('products');
+        } catch (error) {
+            showToast(`فشل تحديث الكميات: ${error.message}`, true);
+        } finally {
+            hideLoader();
+        }
+    };
+
+const renderUsersView = e => { const t = state.users.filter((e => "admin" !== e.role)); e.innerHTML = `<div class="content-header"><h2>قائمة المستخدمين (${t.length})</h2><button id="add-user-btn">إضافة مستخدم جديد</button></div><table><thead><tr><th>الاسم</th><th>البريد الإلكتروني</th><th>الصلاحية</th></tr></thead><tbody>${t.map((e => `<tr><td>${e.name}</td><td>${e.email}</td><td>${"rep" === e.role ? "مندوب" : "مجهز"}</td></tr>`)).join("")}</tbody></table>`, document.getElementById("add-user-btn").addEventListener("click", renderAddUserModal) }, renderAddProductModal = () => { modalContainer.innerHTML = `<div id="product-modal" class="modal-backdrop"><div class="modal"><div class="modal-header"><h3>إضافة منتج جديد</h3></div><form id="product-form"><div class="input-group"><label>اسم المنتج</label><input type="text" id="product-name" required></div><div class="input-group"><label>صورة المنتج</label><input type="file" id="product-image-file" accept="image/*"></div><div class="input-group"><label>الكمية</label><input type="number" id="product-quantity" required></div><div class="input-group"><label>سعر الشراء</label><input type="number" id="product-cost" required></div><div class="input-group"><label>سعر البيع للمندوب</label><input type="number" id="product-rep-price" required></div><div class="input-group"><label>سعر البيع للزبون</label><input type="number" id="product-customer-price" required></div><div class="modal-footer"><button type="button" class="button-secondary" id="cancel-product-btn">إلغاء</button><button type="submit">حفظ المنتج</button></div></form></div></div>`, document.getElementById("product-form").addEventListener("submit", handleAddNewProduct), document.getElementById("cancel-product-btn").addEventListener("click", (() => modalContainer.innerHTML = "")) }, renderAddUserModal = () => { modalContainer.innerHTML = `<div id="user-modal" class="modal-backdrop"><div class="modal"><div class="modal-header"><h3>إضافة مستخدم جديد</h3></div><form id="user-form"><div class="input-group"><label>الاسم</label><input type="text" id="user-name" required></div><div class="input-group"><label>البريد الإلكتروني</label><input type="email" id="user-email" required></div><div class="input-group"><label>كلمة السر</label><input type="password" id="user-password" required></div><div class="input-group"><label>الصلاحية</label><select id="user-role"><option value="rep">مندوب</option><option value="packer">مجهز</option></select></div><div class="modal-footer"><button type="button" class="button-secondary" id="cancel-user-btn">إلغاء</button><button type="submit">حفظ المستخدم</button></div></form></div></div>`, document.getElementById("user-form").addEventListener("submit", handleAddNewUser), document.getElementById("cancel-user-btn").addEventListener("click", (() => modalContainer.innerHTML = "")) }, handleAddNewProduct = async e => { e.preventDefault(), showLoader(); try { const e = document.getElementById("product-image-file").files[0]; let t = null; if (e) { const n = `public/${Date.now()}-${e.name}`, { error: a } = await supabase.storage.from("product_images").upload(n, e); if (a) throw a; const { data: r } = supabase.storage.from("product_images").getPublicUrl(n); t = r.publicUrl } const n = { name: document.getElementById("product-name").value, quantity: parseInt(document.getElementById("product-quantity").value), costPrice: parseFloat(document.getElementById("product-cost").value), repPrice: parseFloat(document.getElementById("product-rep-price").value), customerPrice: parseFloat(document.getElementById("product-customer-price").value), imageUrl: t }, { error: a } = await supabase.from("products").insert(n); if (a) throw a; showToast("تمت إضافة المنتج بنجاح."), modalContainer.innerHTML = "", await fetchAllData(), switchAdminTab("products") } catch (e) { showToast(`خطأ: ${e.details || e.message}`, !0) } finally { hideLoader() } }, handleAddNewUser = async e => { e.preventDefault(), showLoader(); try { const e = document.getElementById("user-name").value, t = document.getElementById("user-email").value, n = document.getElementById("user-password").value, a = document.getElementById("user-role").value, { data: r, error: i } = await supabase.auth.signUp({ email: t, password: n }); if (i) throw i; const { error: o } = await supabase.from("users").insert({ id: r.user.id, name: e, email: t, role: a }); if (o) throw o; showToast("تمت إضافة المستخدم بنجاح."), modalContainer.innerHTML = "", await fetchAllData(), switchAdminTab("users") } catch (e) { showToast(`خطأ: ${e.details || e.message}`, !0) } finally { hideLoader() } };
+
+const renderAdminReportsView = (container) => {
+    const reps = state.users.filter(u => u.role === 'rep');
+    container.innerHTML = `
+        <div class="content-header">
+            <h2>تقارير أرباح المندوبين</h2>
+        </div>
+        <div class="form-section" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; background-color: #f9fafb; padding: 1rem; border-radius: 8px;">
+            <div style="flex: 1 1 150px;"><label>من تاريخ:</label><input type="date" id="start-date"></div>
+            <div style="flex: 1 1 150px;"><label>إلى تاريخ:</label><input type="date" id="end-date"></div>
+            <div style="flex: 1 1 200px;">
+                <label>المندوب:</label>
+                <select id="rep-filter">
+                    <option value="all">كل المندوبين</option>
+                    ${reps.map(r => `<option value="${r.id}">${r.name}</option>`).join('')}
+                </select>
+            </div>
+            <div style="flex: 1 1 auto; align-self: flex-end;">
+                <button id="generate-report-btn" class="button-success" style="width: 100%;">عرض التقرير</button>
+            </div>
+        </div>
+        <div id="report-summary-area" class="report-summary" style="margin-top: 1.5rem; display: none;"></div>
+        <div id="report-table-area" style="margin-top: 1.5rem;"></div>
+    `;
+    document.getElementById('generate-report-btn').addEventListener('click', generateAdminReport);
+    
+    const today = new Date();
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+    const todayISO = today.toISOString().split('T')[0];
+    document.getElementById('start-date').value = firstDayOfMonth;
+    document.getElementById('end-date').value = todayISO;
+    generateAdminReport();
+};
+
+const generateAdminReport = () => {
+    const startDateInput = document.getElementById('start-date').value;
+    const endDateInput = document.getElementById('end-date').value;
+    const repIdFilter = document.getElementById('rep-filter').value;
+
+    const startDate = startDateInput ? new Date(startDateInput) : null;
+    const endDate = endDateInput ? new Date(endDateInput) : null;
+    
+    // لضمان شمول اليوم الأخير كاملاً
+    if (endDate) endDate.setHours(23, 59, 59, 999);
+
+    // 1. تصفية المبيعات حسب الفلاتر المحددة (فقط الطلبات المستلمة)
+    let filteredSales = state.sales.filter(sale => {
+        const saleDate = new Date(sale.created_at);
+        const isDelivered = sale.status === 'delivered';
+        const isAfterStartDate = !startDate || saleDate >= startDate;
+        const isBeforeEndDate = !endDate || saleDate <= endDate;
+        const matchesRep = repIdFilter === 'all' || sale.repId === repIdFilter;
+        return isDelivered && isAfterStartDate && isBeforeEndDate && matchesRep;
     });
-    saveChangesBtn.addEventListener('click', handleBulkQuantityUpdate);
-},
-handleBulkQuantityUpdate = async () => {
-    const changesCount = Object.keys(quantityChanges).length;
-    if (changesCount === 0) return showToast("لا توجد تغييرات لحفظها.", true);
-    const confirmed = await showConfirmationModal(`هل أنت متأكد من تحديث كمية ${changesCount} منتجات؟`);
-    if (!confirmed) return;
-    showLoader();
-    try {
-        const updatePromises = Object.entries(quantityChanges).map(([productId, quantity]) => {
-            return supabase.from('products').update({ quantity: quantity }).eq('id', productId);
-        });
-        const results = await Promise.all(updatePromises);
-        results.forEach(result => { if (result.error) throw result.error; });
-        showToast(`تم تحديث كمية ${changesCount} منتجات بنجاح.`);
-        await fetchAllData();
-        switchAdminTab('products');
-    } catch (error) {
-        showToast(`فشل تحديث الكميات: ${error.message}`, true);
-    } finally {
-        hideLoader();
+
+    // 2. تجميع البيانات حسب المندوب
+    const reportData = {};
+    const processedInvoices = new Set(); // لتجنب حساب الخصم والتوصيل عدة مرات
+
+    filteredSales.forEach(sale => {
+        const repId = sale.repId;
+        if (!reportData[repId]) {
+            reportData[repId] = {
+                repName: sale.repName,
+                orderIds: new Set(),
+                totalRevenue: 0,
+                totalRepProfit: 0, // ربح المندوب
+                totalAdminProfit: 0, // ربح الشركة (الجديد)
+            };
+        }
+        
+        const repEntry = reportData[repId];
+        repEntry.orderIds.add(sale.invoiceId);
+        
+        // حساب إجمالي الإيرادات (سعر البيع للزبون)
+        repEntry.totalRevenue += sale.finalPrice * sale.quantity;
+
+        // حساب ربح المندوب من المنتج
+        repEntry.totalRepProfit += (sale.finalPrice - sale.repPrice) * sale.quantity;
+        
+        // === الجزء الجديد: حساب ربح الشركة من المنتج ===
+        // الربح هو (سعر البيع للمندوب - سعر التكلفة) * الكمية
+        repEntry.totalAdminProfit += (sale.repPrice - sale.costPrice) * sale.quantity;
+        // ===============================================
+
+        // خصم الخصم وكلفة التوصيل من ربح المندوب (مرة واحدة لكل فاتورة)
+        if (!processedInvoices.has(sale.invoiceId)) {
+            repEntry.totalRepProfit -= (sale.discount || 0);
+            repEntry.totalRepProfit -= (sale.delivery_cost || 0);
+            processedInvoices.add(sale.invoiceId);
+        }
+    });
+
+    const reportArray = Object.values(reportData);
+
+    // 3. عرض النتائج
+    const summaryArea = document.getElementById('report-summary-area');
+    const tableArea = document.getElementById('report-table-area');
+
+    if (reportArray.length === 0) {
+        summaryArea.style.display = 'none';
+        tableArea.innerHTML = `<p style="text-align: center; margin-top: 2rem;">لا توجد بيانات مطابقة لمعايير البحث المحددة.</p>`;
+        return;
+    }
+
+    const overallTotalRevenue = reportArray.reduce((sum, rep) => sum + rep.totalRevenue, 0);
+    const overallTotalRepProfit = reportArray.reduce((sum, rep) => sum + rep.totalRepProfit, 0);
+    const overallTotalAdminProfit = reportArray.reduce((sum, rep) => sum + rep.totalAdminProfit, 0); // الجديد
+
+    summaryArea.style.display = 'block';
+    summaryArea.innerHTML = `
+        <p style="margin: 0.5rem 0;">إجمالي قيمة المبيعات: <strong>${overallTotalRevenue.toFixed(2)} د.ع</strong></p>
+        <p style="margin: 0.5rem 0;">إجمالي أرباح المندوبين: <strong>${overallTotalRepProfit.toFixed(2)} د.ع</strong></p>
+        <p style="margin: 0.5rem 0; color: #059669;">إجمالي أرباح الشركة: <strong>${overallTotalAdminProfit.toFixed(2)} د.ع</strong></p>
+    `;
+
+    tableArea.innerHTML = `
+        <table>
+            <thead>
+                <tr>
+                    <th>اسم المندوب</th>
+                    <th>عدد الطلبات</th>
+                    <th>إجمالي قيمة المبيعات</th>
+                    <th>صافي ربح المندوب</th>
+                    <th>أرباح الشركة</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${reportArray.map(rep => `
+                    <tr>
+                        <td>${rep.repName}</td>
+                        <td>${rep.orderIds.size}</td>
+                        <td>${rep.totalRevenue.toFixed(2)} د.ع</td>
+                        <td><strong>${rep.totalRepProfit.toFixed(2)} د.ع</strong></td>
+                        <td style="color: #059669; font-weight: bold;">${rep.totalAdminProfit.toFixed(2)} د.ع</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+};
+
+////////////////////////////////////////
+
+// --- دالة جديدة للتحقق من الرمز السري لتقارير المندوب ---
+const handleShowRepReports = async () => {
+    const pin = "666655";
+    const enteredPin = prompt("الرجاء إدخال الرمز السري لعرض التقارير:");
+    
+    if (enteredPin === null) return; // ألغى المستخدم الإدخال
+    
+    if (enteredPin === pin) {
+        switchRepTab('reports');
+    } else {
+        showToast("الرمز السري غير صحيح.", true);
     }
 };
 
-const renderUsersView=e=>{const t=state.users.filter((e=>"admin"!==e.role));e.innerHTML=`<div class="content-header"><h2>قائمة المستخدمين (${t.length})</h2><button id="add-user-btn">إضافة مستخدم جديد</button></div><table><thead><tr><th>الاسم</th><th>البريد الإلكتروني</th><th>الصلاحية</th></tr></thead><tbody>${t.map((e=>`<tr><td>${e.name}</td><td>${e.email}</td><td>${"rep"===e.role?"مندوب":"مجهز"}</td></tr>`)).join("")}</tbody></table>`,document.getElementById("add-user-btn").addEventListener("click",renderAddUserModal)},renderAddProductModal=()=>{modalContainer.innerHTML=`<div id="product-modal" class="modal-backdrop"><div class="modal"><div class="modal-header"><h3>إضافة منتج جديد</h3></div><form id="product-form"><div class="input-group"><label>اسم المنتج</label><input type="text" id="product-name" required></div><div class="input-group"><label>صورة المنتج</label><input type="file" id="product-image-file" accept="image/*"></div><div class="input-group"><label>الكمية</label><input type="number" id="product-quantity" required></div><div class="input-group"><label>سعر الشراء</label><input type="number" id="product-cost" required></div><div class="input-group"><label>سعر البيع للمندوب</label><input type="number" id="product-rep-price" required></div><div class="input-group"><label>سعر البيع للزبون</label><input type="number" id="product-customer-price" required></div><div class="modal-footer"><button type="button" class="button-secondary" id="cancel-product-btn">إلغاء</button><button type="submit">حفظ المنتج</button></div></form></div></div>`,document.getElementById("product-form").addEventListener("submit",handleAddNewProduct),document.getElementById("cancel-product-btn").addEventListener("click",(()=>modalContainer.innerHTML=""))},renderAddUserModal=()=>{modalContainer.innerHTML=`<div id="user-modal" class="modal-backdrop"><div class="modal"><div class="modal-header"><h3>إضافة مستخدم جديد</h3></div><form id="user-form"><div class="input-group"><label>الاسم</label><input type="text" id="user-name" required></div><div class="input-group"><label>البريد الإلكتروني</label><input type="email" id="user-email" required></div><div class="input-group"><label>كلمة السر</label><input type="password" id="user-password" required></div><div class="input-group"><label>الصلاحية</label><select id="user-role"><option value="rep">مندوب</option><option value="packer">مجهز</option></select></div><div class="modal-footer"><button type="button" class="button-secondary" id="cancel-user-btn">إلغاء</button><button type="submit">حفظ المستخدم</button></div></form></div></div>`,document.getElementById("user-form").addEventListener("submit",handleAddNewUser),document.getElementById("cancel-user-btn").addEventListener("click",(()=>modalContainer.innerHTML=""))},handleAddNewProduct=async e=>{e.preventDefault(),showLoader();try{const e=document.getElementById("product-image-file").files[0];let t=null;if(e){const n=`public/${Date.now()}-${e.name}`,{error:a}=await supabase.storage.from("product_images").upload(n,e);if(a)throw a;const{data:r}=supabase.storage.from("product_images").getPublicUrl(n);t=r.publicUrl}const n={name:document.getElementById("product-name").value,quantity:parseInt(document.getElementById("product-quantity").value),costPrice:parseFloat(document.getElementById("product-cost").value),repPrice:parseFloat(document.getElementById("product-rep-price").value),customerPrice:parseFloat(document.getElementById("product-customer-price").value),imageUrl:t},{error:a}=await supabase.from("products").insert(n);if(a)throw a;showToast("تمت إضافة المنتج بنجاح."),modalContainer.innerHTML="",await fetchAllData(),switchAdminTab("products")}catch(e){showToast(`خطأ: ${e.details||e.message}`,!0)}finally{hideLoader()}},handleAddNewUser=async e=>{e.preventDefault(),showLoader();try{const e=document.getElementById("user-name").value,t=document.getElementById("user-email").value,n=document.getElementById("user-password").value,a=document.getElementById("user-role").value,{data:r,error:i}=await supabase.auth.signUp({email:t,password:n});if(i)throw i;const{error:o}=await supabase.from("users").insert({id:r.user.id,name:e,email:t,role:a});if(o)throw o;showToast("تمت إضافة المستخدم بنجاح."),modalContainer.innerHTML="",await fetchAllData(),switchAdminTab("users")}catch(e){showToast(`خطأ: ${e.details||e.message}`,!0)}finally{hideLoader()}};
-
+/////////////////
 // =================================================================
 // ===== REP-SPECIFIC FUNCTIONS ====================================
 // =================================================================
-const renderRepApp=async()=>{loginSection.classList.add("hidden"),repContainer.classList.remove("hidden"),repContainer.innerHTML=`<div class="container"><header class="app-header"><h1>واجهة المندوب</h1><button id="logout-btn" class="button-danger">تسجيل الخروج</button></header><main><div class="tabs"><button class="tab-button active" data-tab="add-order">إضافة طلب</button><button class="tab-button" data-tab="previous-orders">الطلبات السابقة</button><button class="tab-button" data-tab="reports">تقارير الأرباح</button></div><div id="rep-content-area"></div></main></div>`,document.getElementById("logout-btn").addEventListener("click",handleLogout),document.querySelectorAll("#rep-container .tab-button").forEach((e=>{e.addEventListener("click",(()=>switchRepTab(e.dataset.tab)))})),await fetchAllData(),switchRepTab("add-order")},switchRepTab=e=>{document.querySelectorAll("#rep-container .tab-button").forEach((t=>t.classList.toggle("active",t.dataset.tab===e)));const t=document.getElementById("rep-content-area");"add-order"===e?renderRepOrderCreationView(t):"previous-orders"===e?renderRepPreviousOrdersView(t):"reports"===e&&renderRepReportsView(t)};
+// =================================================================
+// ===== REP-SPECIFIC FUNCTIONS ====================================
+// =================================================================
+const renderRepApp=async()=>{loginSection.classList.add("hidden"),repContainer.classList.remove("hidden"),repContainer.innerHTML=`<div class="container"><header class="app-header"><h1>واجهة المندوب</h1><button id="logout-btn" class="button-danger">تسجيل الخروج</button></header><main><div class="tabs"><button class="tab-button active" data-tab="add-order">إضافة طلب</button><button class="tab-button" data-tab="previous-orders">الطلبات السابقة</button><button class="tab-button" data-tab="reports">تقارير الأرباح</button></div><div id="rep-content-area"></div></main></div>`,document.getElementById("logout-btn").addEventListener("click",handleLogout),
+// --- بداية التعديل: تغيير آلية النقر على التبويبات ---
+document.querySelectorAll("#rep-container .tab-button").forEach((btn=>{btn.addEventListener("click",(()=>{const tab=btn.dataset.tab;"reports"===tab?handleShowRepReports():switchRepTab(tab)}))})),
+// --- نهاية التعديل ---
+await fetchAllData(),switchRepTab("add-order")},switchRepTab=e=>{document.querySelectorAll("#rep-container .tab-button").forEach((t=>t.classList.toggle("active",t.dataset.tab===e)));const t=document.getElementById("rep-content-area");"add-order"===e?renderRepOrderCreationView(t):"previous-orders"===e?renderRepPreviousOrdersView(t):"reports"===e&&renderRepReportsView(t)};
+
+////////////////////////////////////
 
 const renderRepOrderCreationView = e => {
     const iraqProvinces = ["بغداد", "كربلاء", "النجف", "بابل", "الديوانية", "واسط", "ديالى", "صلاح الدين", "كركوك", "الأنبار", "نينوى", "أربيل", "دهوك", "السليمانية", "المثنى", "ذي قار", "ميسان", "البصرة"];
-    e.innerHTML = `<div class="rep-grid"><div><h2>الفاتورة الحالية</h2><div id="invoice-items-container"></div><div id="invoice-summary-container"></div><hr style="margin: 1.5rem 0;"><h2>معلومات الزبون</h2><form id="customer-info-form"><div class="input-group"><label>اسم الزبون</label><input type="text" id="customer-name" required></div><div class="input-group"><label>رقم الهاتف</label><input type="tel" id="customer-phone" required></div><div class="input-group"><label for="customer-province">المحافظة</label><select id="customer-province" required><option value="" disabled selected>-- اختر المحافظة --</option>${iraqProvinces.map(p => `<option value="${p}">${p}</option>`).join('')}</select></div><div class="input-group"><label>العنوان</label><textarea id="customer-address" rows="3" required></textarea></div><div class="input-group"><label>الملاحظات</label><textarea id="invoice-notes" rows="2"></textarea></div><button type="button" id="submit-invoice-btn" class="button-success" disabled>تثبيت الطلب</button></form></div><div><h2>اختر المنتجات</h2><div id="product-grid" class="product-grid">${state.products.filter((p => p.quantity > 0)).map((p => `<div class="product-card"><img src="${p.imageUrl || "https://placehold.co/150x120/e2e8f0/e2e8f0?text=."}" alt="${p.name}"><div class="product-card-body"><h3>${p.name}</h3><button class="add-to-cart-btn" data-product-id="${p.id}">أضف للسلة</button></div></div>`)).join("")}</div></div></div>`;
+    // --- بداية التعديل: إضافة خانة البحث عن المنتج ---
+    e.innerHTML = `<div class="rep-grid"><div><h2>الفاتورة الحالية</h2><div id="invoice-items-container"></div><div id="invoice-summary-container"></div><hr style="margin: 1.5rem 0;"><h2>معلومات الزبون</h2><form id="customer-info-form"><div class="input-group"><label>اسم الزبون</label><input type="text" id="customer-name" required></div><div class="input-group"><label>رقم الهاتف</label><input type="tel" id="customer-phone" required></div><div class="input-group"><label for="customer-province">المحافظة</label><select id="customer-province" required><option value="" disabled selected>-- اختر المحافظة --</option>${iraqProvinces.map(p => `<option value="${p}">${p}</option>`).join('')}</select></div><div class="input-group"><label>العنوان</label><textarea id="customer-address" rows="3" required></textarea></div><div class="input-group"><label>الملاحظات</label><textarea id="invoice-notes" rows="2"></textarea></div><button type="button" id="submit-invoice-btn" class="button-success" disabled>تثبيت الطلب</button></form></div><div><h2>اختر المنتجات</h2>
+    <div class="input-group" style="margin-bottom: 0.5rem;"><input type="text" id="product-search-input" placeholder="اكتب اسم المنتج للبحث..."></div>
+    <div id="product-grid" class="product-grid">${state.products.filter((p => p.quantity > 0)).map((p => `<div class="product-card"><img src="${p.imageUrl || "https://placehold.co/150x120/e2e8f0/e2e8f0?text=."}" alt="${p.name}"><div class="product-card-body"><h3>${p.name}</h3><button class="add-to-cart-btn" data-product-id="${p.id}">أضف للسلة</button></div></div>`)).join("")}</div></div></div>`;
+    // --- نهاية التعديل ---
+    
     document.querySelectorAll(".add-to-cart-btn").forEach((btn => { btn.addEventListener("click", (() => handleAddToCartClick(btn.dataset.productId))) }));
     document.getElementById("customer-province").addEventListener("change", renderInvoiceItems);
     document.getElementById("submit-invoice-btn").addEventListener("click", handleInvoiceSubmit);
+    
+    // --- بداية التعديل: ربط حدث البحث ---
+    document.getElementById("product-search-input").addEventListener("input", handleProductSearch);
+    // --- نهاية التعديل ---
+    
     renderInvoiceItems();
 };
+///////////////////////////////////
 
+// --- دالة جديدة للبحث عن المنتجات في واجهة المندوب ---
+const handleProductSearch = (e) => {
+    const searchTerm = e.target.value.toLowerCase();
+    const productGrid = document.getElementById("product-grid");
+    if (!productGrid) return;
+    
+    const allProducts = state.products.filter(p => p.quantity > 0);
+    const filteredProducts = allProducts.filter(p => p.name.toLowerCase().includes(searchTerm));
+    
+    if (filteredProducts.length === 0) {
+        productGrid.innerHTML = '<p style="text-align: center; grid-column: 1 / -1;">لا توجد منتجات مطابقة للبحث.</p>';
+        return;
+    }
+    
+    productGrid.innerHTML = filteredProducts.map((p => `<div class="product-card"><img src="${p.imageUrl || "https://placehold.co/150x120/e2e8f0/e2e8f0?text=."}" alt="${p.name}"><div class="product-card-body"><h3>${p.name}</h3><button class="add-to-cart-btn" data-product-id="${p.id}">أضف للسلة</button></div></div>`)).join("");
+    
+    // إعادة ربط الأحداث للأزرار الجديدة
+    document.querySelectorAll(".add-to-cart-btn").forEach((btn => {
+        btn.addEventListener("click", (() => handleAddToCartClick(btn.dataset.productId)))
+    }));
+};
+
+
+////////////////////
 const handleAddToCartClick=e=>{if(currentInvoiceItems.find((t=>t.product.id==e)))return showToast("هذا المنتج موجود بالفعل في السلة.",!0);const t=state.products.find((t=>t.id==e));t&&(currentInvoiceItems.push({product:t,quantity:1,finalPrice:t.customerPrice}),renderInvoiceItems())};
 
 const renderInvoiceItems = () => {
@@ -300,12 +503,10 @@ const switchPackerTab = (tab) => {
     }
 };
 
+
+//////////////////////////////////////////////////////////
 const printInvoice = (ordersData, type = 'order') => {
-    if (!ordersData || ordersData.length === 0) {
-        showToast("لا يمكن طباعة محتوى فارغ.", true);
-        return;
-    }
-    
+    if (!ordersData || ordersData.length === 0) return showToast("لا يمكن طباعة محتوى فارغ.", true);
     const printWindow = window.open('', '', 'height=600,width=800');
     printWindow.document.write('<html><head><title>تقرير الطباعة</title>');
     printWindow.document.write('<style>@media print { .no-print { display: none; } .page-break { page-break-after: always; } } body { font-family: Tahoma, sans-serif; font-size: 14px; direction: rtl; text-align: right; } table { width: 100%; border-collapse: collapse; margin-top: 15px; } th, td { border: 1px solid #ccc; padding: 8px; text-align: right; } thead th { background-color: #f2f2f2; } h2, h3 { text-align: center; } .summary-box { padding: 10px; background-color: #e6ffed; border: 1px solid #b2e2c5; margin: 15px 0; text-align: center; } .details-list { margin: 0; padding: 0 1.5rem; } .print-container { padding: 20px; border: 1px solid #333; margin-bottom: 20px; }</style>');
@@ -347,9 +548,9 @@ const printInvoice = (ordersData, type = 'order') => {
                     <hr>
                     <h3>المنتجات المطلوبة</h3>
                     <table>
-                        <thead><tr><th>المنتج</th><th>الكمية</th></tr></thead>
-                        <tbody>${orderItems.map(item => `<tr><td>${item.productName}</td><td><strong>${item.quantity}</strong></td></tr>`).join("")}</tbody>
-                    </table>
+                        <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر البيع</th></tr></thead>
+                        <tbody>${orderItems.map(item => `<tr><td>${item.productName}</td><td><strong>${item.quantity}</strong></td><td>${item.finalPrice.toFixed(2)} د.ع</td></tr>`).join("")}</tbody>
+                        </table>
 
                     <hr>
                     <div style="text-align: left; margin-top: 15px;">
@@ -363,11 +564,22 @@ const printInvoice = (ordersData, type = 'order') => {
     printWindow.document.write('</body></html>'), printWindow.document.close(), printWindow.focus(), printWindow.print();
 };
 
+///////////////////////////////////////////////////////////////////
+
 const renderPackerPendingView = (container) => {
-    const groupedOrders = state.sales.reduce((acc, sale) => ((acc[sale.invoiceId] = acc[sale.invoiceId] || []).push(sale), acc), {});
+    const groupedOrders = state.sales.reduce(((acc, sale) => ((acc[sale.invoiceId] = acc[sale.invoiceId] || []).push(sale), acc)), {});
     const allPendingOrders = Object.values(groupedOrders).filter(o => o[0].status === 'pending');
     const repsWithPendingOrders = [...new Map(allPendingOrders.flat().filter(sale => sale.repId && sale.repName).map(sale => [sale.repId, { id: sale.repId, name: sale.repName }])).values()];
-    container.innerHTML = `<div class="content-header"><h2>الطلبات قيد التجهيز (<span id="pending-order-count">${allPendingOrders.length}</span>)</h2><div style="display: flex; align-items: center; gap: 1rem;"><div><label for="rep-filter-pending" style="font-size: 0.9rem; margin-left: 0.5rem;">تصفية حسب المندوب:</label><select id="rep-filter-pending" style="width: auto; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithPendingOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div><button id="bulk-process-btn" class="button-success" style="width: auto;" disabled>تجهيز وطباعة المحدد (0)</button></div></div><table><thead><tr><th><input type="checkbox" id="select-all-pending-orders"></th><th>الزبون / الفاتورة</th><th>المنتجات</th><th>تغيير فردي</th></tr></thead><tbody id="pending-orders-tbody"></tbody></table>`;
+    
+    // --- بداية التعديل: إضافة خانة بحث الزبون وتغيير الترتيب ---
+    container.innerHTML = `<div class="content-header"><h2>الطلبات قيد التجهيز (<span id="pending-order-count">${allPendingOrders.length}</span>)</h2>
+    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; width: 100%;">
+        <div style="flex: 1 1 200px;"><label for="rep-filter-pending" style="font-size: 0.9rem; margin-left: 0.5rem;">تصفية حسب المندوب:</label><select id="rep-filter-pending" style="width: 100%; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithPendingOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div>
+        <div style="flex: 1 1 200px;"><button id="bulk-process-btn" class="button-success" style="width: 100%;" disabled>تجهيز وطباعة المحدد (0)</button></div>
+        <div style="width: 100%; margin-top: 0.5rem;"><input type="text" id="packer-customer-search-pending" placeholder="ابحث عن اسم الزبون..."></div>
+    </div></div><table><thead><tr><th><input type="checkbox" id="select-all-pending-orders"></th><th>الزبون / الفاتورة</th><th>المنتجات</th><th>تغيير فردي</th></tr></thead><tbody id="pending-orders-tbody"></tbody></table>`;
+    // --- نهاية التعديل ---
+
     const renderTableBody = (ordersToRender) => {
         const tbody = document.getElementById('pending-orders-tbody'), countSpan = document.getElementById('pending-order-count');
         if (!tbody || !countSpan) return;
@@ -384,15 +596,55 @@ const renderPackerPendingView = (container) => {
         document.querySelectorAll('.status-changer').forEach(select => select.addEventListener('change', (e => handleUpdateOrderStatus(e, 'pending'))));
         updateButtonState();
     };
-    document.getElementById('rep-filter-pending').addEventListener('change', (e => { const selectedRepId = e.target.value, filteredOrders = selectedRepId === 'all' ? allPendingOrders : allPendingOrders.filter(order => order[0].repId == selectedRepId); renderTableBody(filteredOrders) }));
-    renderTableBody(allPendingOrders);
+
+    // --- بداية التعديل: تفعيل الفلاتر (مندوب + بحث) ---
+    const repFilter = document.getElementById('rep-filter-pending');
+    const searchInput = document.getElementById('packer-customer-search-pending');
+    
+    const applyPackerFilters = () => {
+        const selectedRepId = repFilter.value;
+        const searchTerm = searchInput.value.toLowerCase();
+        
+        let filteredOrders = allPendingOrders;
+        
+        if (selectedRepId !== 'all') {
+            filteredOrders = filteredOrders.filter(order => order[0].repId == selectedRepId);
+        }
+        
+        if (searchTerm) {
+            filteredOrders = filteredOrders.filter(order => order[0].customerName.toLowerCase().includes(searchTerm));
+        }
+        
+        renderTableBody(filteredOrders);
+    };
+
+    repFilter.addEventListener('change', applyPackerFilters);
+    searchInput.addEventListener('input', applyPackerFilters);
+    
+    applyPackerFilters(); // العرض الأولي
+    // --- نهاية التعديل ---
 };
+
+
+
+
+///////////////////////////////////////////////////
 
 const renderPackerFollowupView = (container) => {
     const groupedOrders = state.sales.reduce(((acc, sale) => ((acc[sale.invoiceId] = acc[sale.invoiceId] || []).push(sale), acc)), {});
     const allFollowupOrders = Object.values(groupedOrders).filter(o => ['prepared', 'shipped'].includes(o[0].status));
     const repsWithFollowupOrders = [...new Map(allFollowupOrders.flat().filter(sale => sale.repId && sale.repName).map(sale => [sale.repId, { id: sale.repId, name: sale.repName }])).values()];
-    container.innerHTML = `<div class="content-header"><h2>متابعة الطلبات (<span id="followup-order-count">${allFollowupOrders.length}</span>)</h2><div style="display: flex; align-items: center; gap: 1rem;"><div><label for="rep-filter-followup" style="font-size: 0.9rem; margin-left: 0.5rem;">تصفية حسب المندوب:</label><select id="rep-filter-followup" style="width: auto; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithFollowupOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div><select id="bulk-status-changer" style="width: auto; padding: 0.5rem;"><option value="">-- اختر الحالة الجديدة --</option><option value="shipped">تم الشحن</option><option value="delivered">تم الاستلام</option><option value="cancelled">ملغي</option></select><button id="bulk-update-btn" class="button-secondary" style="width: auto;" disabled>تحديث المحدد (0)</button></div></div><table><thead><tr><th><input type="checkbox" id="select-all-followup-orders"></th><th>الزبون / الفاتورة</th><th>المنتجات</th><th>الحالة الحالية</th></tr></thead><tbody id="followup-orders-tbody"></tbody></table>`;
+    
+    // --- بداية التعديل: إضافة خانة بحث الزبون وتغيير الترتيب ---
+    container.innerHTML = `<div class="content-header"><h2>متابعة الطلبات (<span id="followup-order-count">${allFollowupOrders.length}</span>)</h2>
+    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; width: 100%;">
+        <div style="flex: 1 1 150px;"><label for="rep-filter-followup" style="font-size: 0.9rem; margin-left: 0.5rem;">تصفية حسب المندوب:</label><select id="rep-filter-followup" style="width: 100%; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithFollowupOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div>
+        <div style="flex: 1 1 150px;"><select id="bulk-status-changer" style="width: 100%; padding: 0.5rem;"><option value="">-- اختر الحالة الجديدة --</option><option value="shipped">تم الشحن</option><option value="delivered">تم الاستلام</option><option value="cancelled">ملغي</option></select></div>
+        <div style="flex: 1 1 150px;"><button id="bulk-update-btn" class="button-secondary" style="width: 100%;" disabled>تحديث المحدد (0)</button></div>
+        <div style="width: 100%; margin-top: 0.5rem;"><input type="text" id="packer-customer-search-followup" placeholder="ابحث عن اسم الزبون..."></div>
+    </div></div><table><thead><tr><th><input type="checkbox" id="select-all-followup-orders"></th><th>الزبون / الفاتورة</th><th>المنتجات</th><th>الحالة الحالية</th></tr></thead><tbody id="followup-orders-tbody"></tbody></table>`;
+    // --- نهاية التعديل ---
+
     const renderTableBody = (ordersToRender) => {
         const tbody = document.getElementById('followup-orders-tbody'), countSpan = document.getElementById('followup-order-count');
         if (!tbody || !countSpan) return;
@@ -408,10 +660,37 @@ const renderPackerFollowupView = (container) => {
         if (bulkUpdateBtn) bulkUpdateBtn.addEventListener('click', handleBulkStatusUpdate);
         updateButtonState();
     };
-    document.getElementById('rep-filter-followup').addEventListener('change', (e => { const selectedRepId = e.target.value, filteredOrders = selectedRepId === 'all' ? allFollowupOrders : allFollowupOrders.filter(order => order[0].repId == selectedRepId); renderTableBody(filteredOrders) }));
-    renderTableBody(allFollowupOrders);
+
+    // --- بداية التعديل: تفعيل الفلاتر (مندوب + بحث) ---
+    const repFilter = document.getElementById('rep-filter-followup');
+    const searchInput = document.getElementById('packer-customer-search-followup');
+    
+    const applyPackerFilters = () => {
+        const selectedRepId = repFilter.value;
+        const searchTerm = searchInput.value.toLowerCase();
+        
+        let filteredOrders = allFollowupOrders;
+        
+        if (selectedRepId !== 'all') {
+            filteredOrders = filteredOrders.filter(order => order[0].repId == selectedRepId);
+        }
+        
+        if (searchTerm) {
+            filteredOrders = filteredOrders.filter(order => order[0].customerName.toLowerCase().includes(searchTerm));
+        }
+        
+        renderTableBody(filteredOrders);
+    };
+
+    repFilter.addEventListener('change', applyPackerFilters);
+    searchInput.addEventListener('input', applyPackerFilters);
+
+    applyPackerFilters(); // العرض الأولي
+    // --- نهاية التعديل ---
 };
 
+
+////////////////////////////////////////////////
 const handleBulkProcessOrders = async (pendingOrders) => {
     const selectedInvoiceIds = Array.from(document.querySelectorAll('.packer-order-checkbox:checked')).map(cb => cb.dataset.invoiceId);
     if (selectedInvoiceIds.length === 0) return showToast("الرجاء تحديد طلب واحد على الأقل.", true);
@@ -479,3 +758,4 @@ const handleUpdateOrderStatus = async (event, currentTab) => {
 // --- Authentication Flow ---
 loginForm.addEventListener('submit',async e=>{e.preventDefault(),showLoader(),messageDiv.textContent="";try{const{data:e,error:t}=await supabase.auth.signInWithPassword({email:document.getElementById("email").value,password:document.getElementById("password").value});if(t)throw t;const{data:n,error:a}=await supabase.from("users").select("*").eq("id",e.user.id).single();if(a)throw a;state.currentUser=n,"admin"===n.role?await renderAdminApp():"rep"===n.role?await renderRepApp():"packer"===n.role?await renderPackerApp():(()=>{throw new Error("صلاحية المستخدم غير معروفة.")})()}catch(e){messageDiv.textContent=`فشل تسجيل الدخول: ${e.message}`,messageDiv.className="error"}finally{hideLoader()}});
 const handleLogout=async()=>{showLoader(),await supabase.auth.signOut(),state.currentUser=null,adminContainer.classList.add("hidden"),repContainer.classList.add("hidden"),packerContainer.classList.add("hidden"),adminContainer.innerHTML="",repContainer.innerHTML="",packerContainer.innerHTML="",loginSection.classList.remove("hidden"),messageDiv.textContent="تم تسجيل الخروج.",messageDiv.className="success",hideLoader()};
+//اضافة خانة للبحث عن المنتج حسب الاسم في واجهة المندوب عند اضافة فاتورة
