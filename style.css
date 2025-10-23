@@ -294,3 +294,22 @@ th { font-weight: bold; color: #374151; }
         margin-left: 0;
     }
 }
+/* في ملف style.css */
+.button-danger {
+    background-color: #ef4444; /* لون أحمر موحد */
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+/* تنسيق إضافي لتمييز زر الحذف وتفريقه عن زر التعديل */
+.order-actions .delete-btn {
+    margin-right: 0.5rem; /* فاصل بين زر التعديل وزر الحذف */
+}
+
+.button-danger:hover {
+    background-color: #dc2626;
+}
