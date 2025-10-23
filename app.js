@@ -452,35 +452,66 @@ const renderRepPreviousOrdersView = e => {
 ///////////////////////////////////////////////////////
 // دالة حذف طلب المندوب بالكامل (إضافة جديدة)
 ///////////////////////////////////////////////////////
+// في ملف app.js، بعد تعريف الدالة مباشرةً
 const handleDeleteOrder = async (invoiceId) => {
-    // 1. طلب تأكيد من المستخدم
-    const confirmed = await showConfirmationModal(`هل أنت متأكد من حذف الطلب رقم ${invoiceId} بالكامل؟ هذا الإجراء لا يمكن التراجع عنه.`);
+    // ... محتوى الدالة الذي قمت بتعديله سابقاً ...
+    const confirmed = await showConfirmationModal(`هل أنت متأكد من حذف الطلب رقم #${invoiceId}؟ سيتم حذف جميع تفاصيل الفاتورة من النظام، وإرجاع المنتجات إلى المخزون.`);
     if (!confirmed) return;
-
+    
     showLoader();
+
     try {
-        // 2. حذف جميع صفوف الطلب المرتبطة برقم الفاتورة من جدول 'sales'
-        // تأكيد الحذف برقم المندوب الحالي لضمان الأمان
-        const { error: deleteError } = await supabase
+        // 2. الحصول على تفاصيل الطلب قبل حذفه
+        const salesItems = state.sales.filter(s => s.invoiceId === invoiceId && s.repId === state.currentUser.id);
+        
+        if (salesItems.length === 0) {
+            throw new Error("لم يتم العثور على الطلب أو أنه ليس من صلاحية هذا المندوب.");
+        }
+
+        //if (orderStatus === 'تم الاستلام') {
+       //     throw new Error("لا يمكن حذف طلب تم استلامه (delivered).");
+       // }
+        // 3. حذف جميع صفوف الطلب
+        const { error: deleteSalesError } = await supabase
             .from('sales')
             .delete()
             .eq('invoiceId', invoiceId)
-            .eq('repId', state.currentUser.id); 
+            .eq('repId', state.currentUser.id);
 
-        if (deleteError) throw deleteError;
+        if (deleteSalesError) throw deleteSalesError;
 
-        showToast(`تم حذف الطلب رقم ${invoiceId} بنجاح.`);
+        // 4. إرجاع الكميات إلى المخزون
+        const updatePromises = salesItems.map(item => {
+            const product = state.products.find(p => p.id === item.productId);
+            if (!product) {
+                console.warn(`Product ID ${item.productId} not found for inventory update.`);
+                return null;
+            }
+            const newQuantity = product.quantity + item.quantity;
+            
+            return supabase.from('products')
+                .update({ quantity: newQuantity })
+                .eq('id', item.productId);
+        }).filter(p => p !== null);
 
-        // 3. تحديث البيانات وإعادة عرض القائمة
+        const updateResults = await Promise.all(updatePromises);
+        
+        const updateError = updateResults.find(result => result && result.error);
+        if (updateError) throw updateError.error;
+
+        showToast(`تم حذف الطلب رقم #${invoiceId} بنجاح وإرجاع المنتجات إلى المخزون.`);
         await fetchAllData();
-        switchRepTab('previous-orders'); // إعادة عرض تبويب الطلبات السابقة لتحديث القائمة
+        renderRepApp();
 
     } catch (error) {
-        showToast(`فشل في حذف الطلب: ${error.message}`, true);
+        showToast(`فشل حذف الطلب: ${error.message}`, true);
     } finally {
         hideLoader();
     }
 };
+
+// **السطر الذي يجب إضافته:** اجعل الدالة متاحة للنطاق العام للنافذة
+window.handleDeleteOrder = handleDeleteOrder;
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////
