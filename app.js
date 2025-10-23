@@ -361,6 +361,8 @@ const handleProductSearch = (e) => {
     }));
 };
 
+// أضف هذه الدالة الجديدة في مكان مناسب ضمن الدوال الخاصة بالمندوب
+// --- دالة جديدة لحذف الفاتورة بالكامل (إضافة جديدة) ---
 
 ////////////////////
 const handleAddToCartClick=e=>{if(currentInvoiceItems.find((t=>t.product.id==e)))return showToast("هذا المنتج موجود بالفعل في السلة.",!0);const t=state.products.find((t=>t.id==e));t&&(currentInvoiceItems.push({product:t,quantity:1,finalPrice:t.customerPrice}),renderInvoiceItems())};
@@ -383,7 +385,7 @@ const renderInvoiceItems = () => {
     const newDiscountInput = document.getElementById("invoice-discount");
     const updateFinalTotal = () => {
         const discount = parseFloat(newDiscountInput.value) || 0;
-        document.getElementById("final-total-amount").textContent = `${(subtotal - discount + deliveryCost).toFixed(2)} د.ع`;
+        document.getElementById("final-total-amount").textContent = `${(subtotal - discount).toFixed(2)} د.ع`;
     };
     updateFinalTotal();
     document.querySelectorAll(".remove-item-btn").forEach((btn => { btn.onclick = e => { currentInvoiceItems.splice(e.currentTarget.dataset.index, 1), renderInvoiceItems() } }));
@@ -414,7 +416,7 @@ const handleInvoiceSubmit = async () => {
     const discount = discountInput ? parseFloat(discountInput.value) || 0 : 0;
     if (!customerName || !customerPhone || !customerAddress || !province) return showToast("الرجاء إدخال معلومات الزبون كاملة، بما في ذلك المحافظة.", !0);
     const deliveryCost = province === "كربلاء" ? 3000 : 5000;
-    const totalAmount = currentInvoiceItems.reduce(((acc, item) => acc + item.quantity * item.finalPrice), 0) - discount + deliveryCost;
+    const totalAmount = currentInvoiceItems.reduce(((acc, item) => acc + item.quantity * item.finalPrice), 0) - discount;
     showLoader();
     const itemsForRPC = currentInvoiceItems.map((item => ({ product_id: parseInt(item.product.id), quantity: item.quantity, final_price: item.finalPrice, product_name: item.product.name, cost_price: item.product.costPrice, rep_price: item.product.repPrice })));
     try {
@@ -427,9 +429,62 @@ const handleInvoiceSubmit = async () => {
         hideLoader();
     }
 };
+////////////////////////////
 
-const renderRepPreviousOrdersView=e=>{e.innerHTML=`<div class="content-header"><h2>الطلبات السابقة</h2><div><label for="status-filter">تصفية حسب الحالة:</label><select id="status-filter" style="width: auto; padding: 0.5rem;"><option value="all">جميع الحالات</option><option value="delivered">تم الاستلام</option><option value="prepared">تم التجهيز</option><option value="shipped">تم الشحن</option><option value="cancelled">ملغي</option></select></div></div><div id="rep-orders-list"></div>`,document.getElementById("status-filter").addEventListener("change",filterRepOrders),filterRepOrders()},filterRepOrders=()=>{const e=document.getElementById("status-filter").value,t=document.getElementById("rep-orders-list"),n=state.sales.reduce(((e,t)=>(e[t.invoiceId]||(e[t.invoiceId]=[]),e[t.invoiceId].push(t),e)),{});let a=Object.values(n);"all"!==e&&(a=a.filter((t=>t[0].status===e))),0===a.length?t.innerHTML="<p>لا توجد طلبات مطابقة للمعايير المحددة.</p>":t.innerHTML=`<table><thead><tr><th>الفاتورة / الزبون</th><th>المنتجات</th><th>الإجمالي</th><th>الحالة</th><th>الإجراء</th></tr></thead><tbody>${a.map((e=>{const t=e[0],n=(e.reduce(((e,t)=>e+t.quantity*t.finalPrice),0)-(t.discount||0)).toFixed(2),a=t.status;return`<tr><td><div>${t.customerName}</div><small>${t.invoiceId}</small><small>${(new Date(t.created_at)).toLocaleDateString("ar-EG")}</small></td><td><ul class="item-list-in-table">${e.map((e=>`<li>${e.productName} (الكمية: ${e.quantity})</li>`)).join("")}</ul></td><td>${n} د.ع</td><td><span class="status-badge ${getStatusClass(a)}">${getStatusText(a)}</span></td><td><button class="button-secondary print-btn" data-invoice-id="${t.invoiceId}" data-print-type="order" style="width: auto; padding: 0.5rem 1rem;">طباعة الفاتورة</button></td></tr>`})).join("")}</tbody></table>`,document.querySelectorAll(".print-btn").forEach((e=>{e.addEventListener("click",(e=>{const t=e.currentTarget.dataset.invoiceId,a=Object.values(n).find((e=>e[0].invoiceId===t));a&&printInvoice([a],"order")}))}))};
+const renderRepPreviousOrdersView = e => {
+    const n = state.sales.reduce(((e, t) => (e[t.invoiceId] || (e[t.invoiceId] = []), e[t.invoiceId].push(t), e)), {}),
+        a = Object.values(n);
+    e.innerHTML = `<div class="content-header"><h2>الطلبات السابقة (${a.length})</h2></div><table><thead><tr><th>رقم الفاتورة</th><th>الزبون</th><th>المحافظة</th><th>الإجمالي</th><th>الحالة</th><th>تاريخ الإنشاء</th><th>الإجراءات</th></tr></thead><tbody>` + a.map((e => {
+        const n = e[0],
+            t = n.invoiceId,
+            r = n.customerName,
+            i = n.province,
+            o = (e.reduce(((e, t) => e + t.quantity * t.finalPrice), 0) - (n.discount || 0) + (n.delivery_cost || 0)).toFixed(2),
+            s = getStatusText(n.status),
+            l = new Date(n.created_at).toLocaleDateString();
+        // تم إضافة زر الحذف هنا
+        return `<tr><td>${t}</td><td>${r}</td><td>${i}</td><td>${o} د.ع</td><td><span class="${getStatusClass(n.status)}">${s}</span></td><td>${l}</td><td class="order-actions"><button onclick="editOrder('${n.invoiceId}')">تعديل</button><button class="button-danger delete-btn" onclick="handleDeleteOrder('${n.invoiceId}')">حذف</button></td></tr>`
+    })).join("") + "</tbody></table>"
+};
 
+
+////////////////////////////
+///////////////////////////////////////////////////////
+// دالة حذف طلب المندوب بالكامل (إضافة جديدة)
+///////////////////////////////////////////////////////
+const handleDeleteOrder = async (invoiceId) => {
+    // 1. طلب تأكيد من المستخدم
+    const confirmed = await showConfirmationModal(`هل أنت متأكد من حذف الطلب رقم ${invoiceId} بالكامل؟ هذا الإجراء لا يمكن التراجع عنه.`);
+    if (!confirmed) return;
+
+    showLoader();
+    try {
+        // 2. حذف جميع صفوف الطلب المرتبطة برقم الفاتورة من جدول 'sales'
+        // تأكيد الحذف برقم المندوب الحالي لضمان الأمان
+        const { error: deleteError } = await supabase
+            .from('sales')
+            .delete()
+            .eq('invoiceId', invoiceId)
+            .eq('repId', state.currentUser.id); 
+
+        if (deleteError) throw deleteError;
+
+        showToast(`تم حذف الطلب رقم ${invoiceId} بنجاح.`);
+
+        // 3. تحديث البيانات وإعادة عرض القائمة
+        await fetchAllData();
+        switchRepTab('previous-orders'); // إعادة عرض تبويب الطلبات السابقة لتحديث القائمة
+
+    } catch (error) {
+        showToast(`فشل في حذف الطلب: ${error.message}`, true);
+    } finally {
+        hideLoader();
+    }
+};
+
+////////////////////////////////////////////////////////////
+////////////////////////////////////////////////
+////////////////////////////////////////////////
 const renderRepReportsView = e => {
     const deliveredSales = state.sales.filter((s => s.status === "delivered" && !s.profit_received));
     const groupedDeliveredOrders = deliveredSales.reduce(((acc, sale) => (acc[sale.invoiceId] || (acc[sale.invoiceId] = []), acc[sale.invoiceId].push(sale), acc)), {});
@@ -571,12 +626,17 @@ const renderPackerPendingView = (container) => {
     const allPendingOrders = Object.values(groupedOrders).filter(o => o[0].status === 'pending');
     const repsWithPendingOrders = [...new Map(allPendingOrders.flat().filter(sale => sale.repId && sale.repName).map(sale => [sale.repId, { id: sale.repId, name: sale.repName }])).values()];
     
-    // --- بداية التعديل: إضافة خانة بحث الزبون وتغيير الترتيب ---
+    // --- بداية التعديل: إضافة فلاتر التاريخ وتغيير الترتيب ---
     container.innerHTML = `<div class="content-header"><h2>الطلبات قيد التجهيز (<span id="pending-order-count">${allPendingOrders.length}</span>)</h2>
     <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; width: 100%;">
-        <div style="flex: 1 1 200px;"><label for="rep-filter-pending" style="font-size: 0.9rem; margin-left: 0.5rem;">تصفية حسب المندوب:</label><select id="rep-filter-pending" style="width: 100%; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithPendingOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div>
-        <div style="flex: 1 1 200px;"><button id="bulk-process-btn" class="button-success" style="width: 100%;" disabled>تجهيز وطباعة المحدد (0)</button></div>
-        <div style="width: 100%; margin-top: 0.5rem;"><input type="text" id="packer-customer-search-pending" placeholder="ابحث عن اسم الزبون..."></div>
+        <div style="flex: 1 1 150px;"><label for="rep-filter-pending" style="font-size: 0.9rem;">المندوب:</label><select id="rep-filter-pending" style="width: 100%; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithPendingOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div>
+        <div style="flex: 1 1 150px; align-self: flex-end;"><button id="bulk-process-btn" class="button-success" style="width: 100%;" disabled>تجهيز وطباعة المحدد (0)</button></div>
+        
+        <div style="flex: 1 1 150px;"><label for="start-date-pending" style="font-size: 0.9rem;">من تاريخ:</label><input type="date" id="start-date-pending" style="width: 100%; padding: 0.5rem;"></div>
+        <div style="flex: 1 1 150px;"><label for="end-date-pending" style="font-size: 0.9rem;">إلى تاريخ:</label><input type="date" id="end-date-pending" style="width: 100%; padding: 0.5rem;"></div>
+        <div style="flex: 1 1 auto; align-self: flex-end;"><button id="clear-date-filter-pending-btn" class="button-secondary" style="width: 100%; padding: 0.5rem; font-size: 0.9rem;">مسح التاريخ</button></div>
+
+        <div style="width: 100%; margin-top: 0.5rem;"><label for="packer-customer-search-pending" style="font-size: 0.9rem;">البحث باسم الزبون:</label><input type="text" id="packer-customer-search-pending" placeholder="اكتب اسم الزبون..."></div>
     </div></div><table><thead><tr><th><input type="checkbox" id="select-all-pending-orders"></th><th>الزبون / الفاتورة</th><th>المنتجات</th><th>تغيير فردي</th></tr></thead><tbody id="pending-orders-tbody"></tbody></table>`;
     // --- نهاية التعديل ---
 
@@ -597,13 +657,24 @@ const renderPackerPendingView = (container) => {
         updateButtonState();
     };
 
-    // --- بداية التعديل: تفعيل الفلاتر (مندوب + بحث) ---
+    // --- بداية التعديل: تفعيل الفلاتر (مندوب + بحث + تاريخ) ---
     const repFilter = document.getElementById('rep-filter-pending');
     const searchInput = document.getElementById('packer-customer-search-pending');
+    const startDateInput = document.getElementById('start-date-pending');
+    const endDateInput = document.getElementById('end-date-pending');
+    const clearDateBtn = document.getElementById('clear-date-filter-pending-btn');
     
     const applyPackerFilters = () => {
         const selectedRepId = repFilter.value;
         const searchTerm = searchInput.value.toLowerCase();
+        
+        const startDateVal = startDateInput.value;
+        const endDateVal = endDateInput.value;
+        const startDate = startDateVal ? new Date(startDateVal) : null;
+        const endDate = endDateVal ? new Date(endDateVal) : null;
+        
+        if (startDate) startDate.setHours(0, 0, 0, 0);
+        if (endDate) endDate.setHours(23, 59, 59, 999);
         
         let filteredOrders = allPendingOrders;
         
@@ -615,11 +686,25 @@ const renderPackerPendingView = (container) => {
             filteredOrders = filteredOrders.filter(order => order[0].customerName.toLowerCase().includes(searchTerm));
         }
         
+        if (startDate) {
+            filteredOrders = filteredOrders.filter(order => new Date(order[0].created_at) >= startDate);
+        }
+        if (endDate) {
+            filteredOrders = filteredOrders.filter(order => new Date(order[0].created_at) <= endDate);
+        }
+        
         renderTableBody(filteredOrders);
     };
 
     repFilter.addEventListener('change', applyPackerFilters);
     searchInput.addEventListener('input', applyPackerFilters);
+    startDateInput.addEventListener('change', applyPackerFilters);
+    endDateInput.addEventListener('change', applyPackerFilters);
+    clearDateBtn.addEventListener('click', () => {
+        startDateInput.value = '';
+        endDateInput.value = '';
+        applyPackerFilters();
+    });
     
     applyPackerFilters(); // العرض الأولي
     // --- نهاية التعديل ---
@@ -635,13 +720,18 @@ const renderPackerFollowupView = (container) => {
     const allFollowupOrders = Object.values(groupedOrders).filter(o => ['prepared', 'shipped'].includes(o[0].status));
     const repsWithFollowupOrders = [...new Map(allFollowupOrders.flat().filter(sale => sale.repId && sale.repName).map(sale => [sale.repId, { id: sale.repId, name: sale.repName }])).values()];
     
-    // --- بداية التعديل: إضافة خانة بحث الزبون وتغيير الترتيب ---
+    // --- بداية التعديل: إضافة فلاتر التاريخ وتغيير الترتيب ---
     container.innerHTML = `<div class="content-header"><h2>متابعة الطلبات (<span id="followup-order-count">${allFollowupOrders.length}</span>)</h2>
     <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; width: 100%;">
-        <div style="flex: 1 1 150px;"><label for="rep-filter-followup" style="font-size: 0.9rem; margin-left: 0.5rem;">تصفية حسب المندوب:</label><select id="rep-filter-followup" style="width: 100%; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithFollowupOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div>
-        <div style="flex: 1 1 150px;"><select id="bulk-status-changer" style="width: 100%; padding: 0.5rem;"><option value="">-- اختر الحالة الجديدة --</option><option value="shipped">تم الشحن</option><option value="delivered">تم الاستلام</option><option value="cancelled">ملغي</option></select></div>
-        <div style="flex: 1 1 150px;"><button id="bulk-update-btn" class="button-secondary" style="width: 100%;" disabled>تحديث المحدد (0)</button></div>
-        <div style="width: 100%; margin-top: 0.5rem;"><input type="text" id="packer-customer-search-followup" placeholder="ابحث عن اسم الزبون..."></div>
+        <div style="flex: 1 1 150px;"><label for="rep-filter-followup" style="font-size: 0.9rem;">المندوب:</label><select id="rep-filter-followup" style="width: 100%; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithFollowupOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div>
+        <div style="flex: 1 1 150px;"><label for="bulk-status-changer" style="font-size: 0.9rem;">تحديث جماعي:</label><select id="bulk-status-changer" style="width: 100%; padding: 0.5rem;"><option value="">-- اختر الحالة --</option><option value="shipped">تم الشحن</option><option value="delivered">تم الاستلام</option><option value="cancelled">ملغي</option></select></div>
+        <div style="flex: 1 1 auto; align-self: flex-end;"><button id="bulk-update-btn" class="button-secondary" style="width: 100%;" disabled>تحديث المحدد (0)</button></div>
+        
+        <div style="flex: 1 1 150px;"><label for="start-date-followup" style="font-size: 0.9rem;">من تاريخ:</label><input type="date" id="start-date-followup" style="width: 100%; padding: 0.5rem;"></div>
+        <div style="flex: 1 1 150px;"><label for="end-date-followup" style="font-size: 0.9rem;">إلى تاريخ:</label><input type="date" id="end-date-followup" style="width: 100%; padding: 0.5rem;"></div>
+        <div style="flex: 1 1 auto; align-self: flex-end;"><button id="clear-date-filter-followup-btn" class="button-secondary" style="width: 100%; padding: 0.5rem; font-size: 0.9rem;">مسح التاريخ</button></div>
+
+        <div style="width: 100%; margin-top: 0.5rem;"><label for="packer-customer-search-followup" style="font-size: 0.9rem;">البحث باسم الزبون:</label><input type="text" id="packer-customer-search-followup" placeholder="اكتب اسم الزبون..."></div>
     </div></div><table><thead><tr><th><input type="checkbox" id="select-all-followup-orders"></th><th>الزبون / الفاتورة</th><th>المنتجات</th><th>الحالة الحالية</th></tr></thead><tbody id="followup-orders-tbody"></tbody></table>`;
     // --- نهاية التعديل ---
 
@@ -661,14 +751,25 @@ const renderPackerFollowupView = (container) => {
         updateButtonState();
     };
 
-    // --- بداية التعديل: تفعيل الفلاتر (مندوب + بحث) ---
+    // --- بداية التعديل: تفعيل الفلاتر (مندوب + بحث + تاريخ) ---
     const repFilter = document.getElementById('rep-filter-followup');
     const searchInput = document.getElementById('packer-customer-search-followup');
+    const startDateInput = document.getElementById('start-date-followup');
+    const endDateInput = document.getElementById('end-date-followup');
+    const clearDateBtn = document.getElementById('clear-date-filter-followup-btn');
     
     const applyPackerFilters = () => {
         const selectedRepId = repFilter.value;
         const searchTerm = searchInput.value.toLowerCase();
+
+        const startDateVal = startDateInput.value;
+        const endDateVal = endDateInput.value;
+        const startDate = startDateVal ? new Date(startDateVal) : null;
+        const endDate = endDateVal ? new Date(endDateVal) : null;
         
+        if (startDate) startDate.setHours(0, 0, 0, 0);
+        if (endDate) endDate.setHours(23, 59, 59, 999);
+
         let filteredOrders = allFollowupOrders;
         
         if (selectedRepId !== 'all') {
@@ -678,12 +779,26 @@ const renderPackerFollowupView = (container) => {
         if (searchTerm) {
             filteredOrders = filteredOrders.filter(order => order[0].customerName.toLowerCase().includes(searchTerm));
         }
+
+        if (startDate) {
+            filteredOrders = filteredOrders.filter(order => new Date(order[0].created_at) >= startDate);
+        }
+        if (endDate) {
+            filteredOrders = filteredOrders.filter(order => new Date(order[0].created_at) <= endDate);
+        }
         
         renderTableBody(filteredOrders);
     };
 
     repFilter.addEventListener('change', applyPackerFilters);
     searchInput.addEventListener('input', applyPackerFilters);
+    startDateInput.addEventListener('change', applyPackerFilters);
+    endDateInput.addEventListener('change', applyPackerFilters);
+    clearDateBtn.addEventListener('click', () => {
+        startDateInput.value = '';
+        endDateInput.value = '';
+        applyPackerFilters();
+    });
 
     applyPackerFilters(); // العرض الأولي
     // --- نهاية التعديل ---
@@ -759,3 +874,4 @@ const handleUpdateOrderStatus = async (event, currentTab) => {
 loginForm.addEventListener('submit',async e=>{e.preventDefault(),showLoader(),messageDiv.textContent="";try{const{data:e,error:t}=await supabase.auth.signInWithPassword({email:document.getElementById("email").value,password:document.getElementById("password").value});if(t)throw t;const{data:n,error:a}=await supabase.from("users").select("*").eq("id",e.user.id).single();if(a)throw a;state.currentUser=n,"admin"===n.role?await renderAdminApp():"rep"===n.role?await renderRepApp():"packer"===n.role?await renderPackerApp():(()=>{throw new Error("صلاحية المستخدم غير معروفة.")})()}catch(e){messageDiv.textContent=`فشل تسجيل الدخول: ${e.message}`,messageDiv.className="error"}finally{hideLoader()}});
 const handleLogout=async()=>{showLoader(),await supabase.auth.signOut(),state.currentUser=null,adminContainer.classList.add("hidden"),repContainer.classList.add("hidden"),packerContainer.classList.add("hidden"),adminContainer.innerHTML="",repContainer.innerHTML="",packerContainer.innerHTML="",loginSection.classList.remove("hidden"),messageDiv.textContent="تم تسجيل الخروج.",messageDiv.className="success",hideLoader()};
 //اضافة خانة للبحث عن المنتج حسب الاسم في واجهة المندوب عند اضافة فاتورة
+
