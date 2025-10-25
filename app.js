@@ -640,7 +640,7 @@ const printInvoice = (ordersData, type = 'order') => {
 
                     <hr>
                     <div style="text-align: left; margin-top: 15px;">
-                        <h3 style="color: #16a34a;">المبلغ الإجمالي مع التوصيل: ${(firstItem.totalAmount || 0).toFixed(2)} د.ع</h3>
+                        <h3 style="color: #16a34a;">المبلغ الإجمالي مع التوصيل: ${(firstItem.totalAmount || t.delivery_cost).toFixed(2)} د.ع</h3>
                     </div>
                     </div>
             `;
