@@ -1,12 +1,13 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
 
 // 1. Supabase Setup
+// NOTE: For security in a real app, the service role key should NEVER be exposed here.
 const SUPABASE_URL = 'https://iqfxbunxrnvmcsazmwvo.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlxZnhidW54cm52bWNzYXptd3ZvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjAxOTI1NDEsImV4cCI6MjA3NTc2ODU0MX0.uVj2ioxJ5oaPsxLVbCaN3h1C3T0Wt8AUyobc5nkIE5c';
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // --- Global State ---
-let state = { products: [], users: [], sales: [], currentUser: null };
+let state = { products: [], users: [], sales: [], regions: [], currentUser: null, cityMap: {} };
 let currentInvoiceItems = [];
 
 // --- DOM Elements ---
@@ -48,26 +49,61 @@ const showConfirmationModal = (message) => {
 const fetchAllData = async () => {
     showLoader();
     try {
-        const salesQuery = supabase.from('sales').select('*').order('created_at', { ascending: false });
+        const salesQuery = supabase.from('sales_items').select('*, order_header:orders(client_name, client_mobile, province, alwaseet_qr_id, is_finance_confirmed, rep_id, rep_name, delivery_cost, total_price, discount_amount, status_internal)').order('created_at', { ascending: false });
+        
         if (state.currentUser?.role === 'rep') {
-            salesQuery.eq('repId', state.currentUser.id);
+            // فلترة الطلبات الخاصة بالمندوب
+            salesQuery.eq('rep_id', state.currentUser.id);
         }
-        const [productsRes, salesRes, usersRes] = await Promise.all([
+
+        const [productsRes, salesItemsRes, usersRes, regionsRes] = await Promise.all([
             supabase.from('products').select('*'),
             salesQuery,
-            state.currentUser?.role === 'admin' ? supabase.from('users').select('*') : Promise.resolve({ data: [], error: null })
+            state.currentUser?.role === 'admin' ? supabase.from('users').select('*') : Promise.resolve({ data: [], error: null }),
+            supabase.from('alwaseet_regions').select('city_id, city_name, region_id, region_name')
         ]);
+        
         if (productsRes.error) throw productsRes.error;
-        if (salesRes.error) throw salesRes.error;
+        if (salesItemsRes.error) throw salesItemsRes.error;
+        if (regionsRes.error) throw regionsRes.error;
+
         state.products = productsRes.data;
-        state.sales = salesRes.data;
+        state.sales = salesItemsRes.data; 
         if (usersRes.data) state.users = usersRes.data;
+        
+        // تجهيز بيانات المناطق (مهم لربط الوسيط)
+        state.regions = regionsRes.data;
+        state.cityMap = state.regions.reduce((acc, region) => {
+            if (!acc[region.city_name]) {
+                acc[region.city_name] = { id: region.city_id, regions: [] };
+            }
+            acc[region.city_name].regions.push(region);
+            return acc;
+        }, {});
+
     } catch (error) {
         showToast(`فشل تحميل البيانات: ${error.message}`, true);
     } finally {
         hideLoader();
     }
 };
+
+// --- AlWaseet Helper Functions (مساعدات الوسيط) ---
+
+// دالة للبحث عن City ID و Region ID من قاعدة البيانات المحلية
+const getAlWaseetIDs = (cityName, regionName) => {
+    const cityEntry = state.cityMap[cityName];
+    if (!cityEntry) return { cityId: null, regionId: null };
+
+    // البحث عن Region ID الأكثر تطابقاً (نبسط البحث هنا بالاسم)
+    const regionEntry = cityEntry.regions.find(r => r.region_name === regionName) || cityEntry.regions[0];
+
+    return {
+        cityId: cityEntry.id,
+        regionId: regionEntry ? regionEntry.region_id : null
+    };
+};
+
 
 // =================================================================
 // ===== ADMIN-SPECIFIC FUNCTIONS ==================================
@@ -194,10 +230,11 @@ const generateAdminReport = () => {
     // 1. تصفية المبيعات حسب الفلاتر المحددة (فقط الطلبات المستلمة)
     let filteredSales = state.sales.filter(sale => {
         const saleDate = new Date(sale.created_at);
-        const isDelivered = sale.status === 'delivered';
+        // التعديل: يجب أن نعتمد على حالة التوصيل المؤكدة مالياً (من جدول orders)
+        const isDelivered = sale.order_header.is_finance_confirmed === true;
         const isAfterStartDate = !startDate || saleDate >= startDate;
         const isBeforeEndDate = !endDate || saleDate <= endDate;
-        const matchesRep = repIdFilter === 'all' || sale.repId === repIdFilter;
+        const matchesRep = repIdFilter === 'all' || sale.order_header.rep_id === repIdFilter;
         return isDelivered && isAfterStartDate && isBeforeEndDate && matchesRep;
     });
 
@@ -206,10 +243,12 @@ const generateAdminReport = () => {
     const processedInvoices = new Set(); // لتجنب حساب الخصم والتوصيل عدة مرات
 
     filteredSales.forEach(sale => {
-        const repId = sale.repId;
+        const repId = sale.order_header.rep_id;
+        const invoiceId = sale.invoice_id; // استخدام invoice_id من sales_items
+        
         if (!reportData[repId]) {
             reportData[repId] = {
-                repName: sale.repName,
+                repName: sale.order_header.rep_name,
                 orderIds: new Set(),
                 totalRevenue: 0,
                 totalRepProfit: 0, // ربح المندوب
@@ -218,24 +257,25 @@ const generateAdminReport = () => {
         }
         
         const repEntry = reportData[repId];
-        repEntry.orderIds.add(sale.invoiceId);
+        repEntry.orderIds.add(invoiceId);
         
         // حساب إجمالي الإيرادات (سعر البيع للزبون)
-        repEntry.totalRevenue += sale.finalPrice * sale.quantity;
+        repEntry.totalRevenue += sale.final_price * sale.quantity;
 
         // حساب ربح المندوب من المنتج
-        repEntry.totalRepProfit += (sale.finalPrice - sale.repPrice) * sale.quantity;
+        // ربح المندوب = (سعر البيع للزبون - سعر البيع للمندوب) * الكمية
+        repEntry.totalRepProfit += (sale.final_price - sale.rep_price) * sale.quantity;
         
-        // === الجزء الجديد: حساب ربح الشركة من المنتج ===
-        // الربح هو (سعر البيع للمندوب - سعر التكلفة) * الكمية
-        repEntry.totalAdminProfit += (sale.repPrice - sale.costPrice) * sale.quantity;
-        // ===============================================
-
+        // حساب ربح الشركة من المنتج
+        // ربح الشركة = (سعر البيع للمندوب - سعر التكلفة) * الكمية
+        repEntry.totalAdminProfit += (sale.rep_price - sale.cost_price) * sale.quantity;
+        
         // خصم الخصم وكلفة التوصيل من ربح المندوب (مرة واحدة لكل فاتورة)
-        if (!processedInvoices.has(sale.invoiceId)) {
-            repEntry.totalRepProfit -= (sale.discount || 0);
-            repEntry.totalRepProfit -= (sale.delivery_cost || 0);
-            processedInvoices.add(sale.invoiceId);
+        if (!processedInvoices.has(invoiceId)) {
+            // نستخدم البيانات من جدول orders هنا
+            repEntry.totalRepProfit -= (sale.order_header.discount_amount || 0);
+            repEntry.totalRepProfit -= (sale.order_header.delivery_cost || 0);
+            processedInvoices.add(invoiceId);
         }
     });
 
@@ -288,621 +328,226 @@ const generateAdminReport = () => {
     `;
 };
 
-////////////////////////////////////////
 
-// --- دالة جديدة للتحقق من الرمز السري لتقارير المندوب ---
-const handleShowRepReports = async () => {
-    const pin = "666655";
-    const enteredPin = prompt("الرجاء إدخال الرمز السري لعرض التقارير:");
-    
-    if (enteredPin === null) return; // ألغى المستخدم الإدخال
-    
-    if (enteredPin === pin) {
-        switchRepTab('reports');
-    } else {
-        showToast("الرمز السري غير صحيح.", true);
-    }
-};
+// ... (باقي الدوال) ...
 
-/////////////////
-// =================================================================
-// ===== REP-SPECIFIC FUNCTIONS ====================================
-// =================================================================
-// =================================================================
-// ===== REP-SPECIFIC FUNCTIONS ====================================
-// =================================================================
-const renderRepApp=async()=>{loginSection.classList.add("hidden"),repContainer.classList.remove("hidden"),repContainer.innerHTML=`<div class="container"><header class="app-header"><h1>واجهة المندوب</h1><button id="logout-btn" class="button-danger">تسجيل الخروج</button></header><main><div class="tabs"><button class="tab-button active" data-tab="add-order">إضافة طلب</button><button class="tab-button" data-tab="previous-orders">الطلبات السابقة</button><button class="tab-button" data-tab="reports">تقارير الأرباح</button></div><div id="rep-content-area"></div></main></div>`,document.getElementById("logout-btn").addEventListener("click",handleLogout),
-// --- بداية التعديل: تغيير آلية النقر على التبويبات ---
-document.querySelectorAll("#rep-container .tab-button").forEach((btn=>{btn.addEventListener("click",(()=>{const tab=btn.dataset.tab;"reports"===tab?handleShowRepReports():switchRepTab(tab)}))})),
-// --- نهاية التعديل ---
-await fetchAllData(),switchRepTab("add-order")},switchRepTab=e=>{document.querySelectorAll("#rep-container .tab-button").forEach((t=>t.classList.toggle("active",t.dataset.tab===e)));const t=document.getElementById("rep-content-area");"add-order"===e?renderRepOrderCreationView(t):"previous-orders"===e?renderRepPreviousOrdersView(t):"reports"===e&&renderRepReportsView(t)};
 
-////////////////////////////////////
+// =================================================================
+// ===== REP-SPECIFIC FUNCTIONS (واجهة المندوب) ===================
+// =================================================================
 
 const renderRepOrderCreationView = e => {
-    const iraqProvinces = ["بغداد", "كربلاء", "النجف", "بابل", "الديوانية", "واسط", "ديالى", "صلاح الدين", "كركوك", "الأنبار", "نينوى", "أربيل", "دهوك", "السليمانية", "المثنى", "ذي قار", "ميسان", "البصرة"];
-    // --- بداية التعديل: إضافة خانة البحث عن المنتج ---
-    e.innerHTML = `<div class="rep-grid"><div><h2>الفاتورة الحالية</h2><div id="invoice-items-container"></div><div id="invoice-summary-container"></div><hr style="margin: 1.5rem 0;"><h2>معلومات الزبون</h2><form id="customer-info-form"><div class="input-group"><label>اسم الزبون</label><input type="text" id="customer-name" required></div><div class="input-group"><label>رقم الهاتف</label><input type="tel" id="customer-phone" required></div><div class="input-group"><label for="customer-province">المحافظة</label><select id="customer-province" required><option value="" disabled selected>-- اختر المحافظة --</option>${iraqProvinces.map(p => `<option value="${p}">${p}</option>`).join('')}</select></div><div class="input-group"><label>العنوان</label><textarea id="customer-address" rows="3" required></textarea></div><div class="input-group"><label>الملاحظات</label><textarea id="invoice-notes" rows="2"></textarea></div><button type="button" id="submit-invoice-btn" class="button-success" disabled>تثبيت الطلب</button></form></div><div><h2>اختر المنتجات</h2>
+    // جلب أسماء المحافظات والمناطق من الـ state
+    const cityNames = Object.keys(state.cityMap);
+    
+    // الحصول على المناطق التابعة للمحافظة المختارة حالياً
+    const selectedCityName = document.getElementById('customer-province')?.value;
+    const regions = selectedCityName && state.cityMap[selectedCityName] 
+        ? state.cityMap[selectedCityName].regions 
+        : [];
+
+    e.innerHTML = `<div class="rep-grid"><div><h2>الفاتورة الحالية</h2><div id="invoice-items-container"></div><div id="invoice-summary-container"></div><hr style="margin: 1.5rem 0;"><h2>معلومات الزبون</h2><form id="customer-info-form">
+    
+    <div class="input-group"><label>اسم الزبون</label><input type="text" id="customer-name" required></div>
+    <div class="input-group"><label>رقم الهاتف</label><input type="tel" id="customer-phone" required></div>
+    
+    <div class="input-group"><label for="customer-province">المحافظة</label>
+        <select id="customer-province" required>
+            <option value="" disabled selected>-- اختر المحافظة --</option>
+            ${cityNames.map(p => `<option value="${p}">${p}</option>`).join('')}
+        </select>
+    </div>
+    
+    <div class="input-group"><label for="customer-region">المنطقة</label>
+        <select id="customer-region" required ${regions.length === 0 ? 'disabled' : ''}>
+            <option value="" disabled selected>-- اختر المنطقة --</option>
+            ${regions.map(r => `<option value="${r.region_name}">${r.region_name}</option>`).join('')}
+        </select>
+    </div>
+
+    <div class="input-group"><label>العنوان التفصيلي</label><textarea id="customer-address" rows="2" required></textarea></div>
+    <div class="input-group"><label>ملاحظات الشحن</label><textarea id="invoice-notes" rows="2"></textarea></div>
+    <button type="button" id="submit-invoice-btn" class="button-success" disabled>تثبيت الطلب</button>
+    
+    </form></div><div><h2>اختر المنتجات</h2>
     <div class="input-group" style="margin-bottom: 0.5rem;"><input type="text" id="product-search-input" placeholder="اكتب اسم المنتج للبحث..."></div>
     <div id="product-grid" class="product-grid">${state.products.filter((p => p.quantity > 0)).map((p => `<div class="product-card"><img src="${p.imageUrl || "https://placehold.co/150x120/e2e8f0/e2e8f0?text=."}" alt="${p.name}"><div class="product-card-body"><h3>${p.name}</h3><button class="add-to-cart-btn" data-product-id="${p.id}">أضف للسلة</button></div></div>`)).join("")}</div></div></div>`;
-    // --- نهاية التعديل ---
     
+    // ربط الأحداث
     document.querySelectorAll(".add-to-cart-btn").forEach((btn => { btn.addEventListener("click", (() => handleAddToCartClick(btn.dataset.productId))) }));
-    document.getElementById("customer-province").addEventListener("change", renderInvoiceItems);
-    document.getElementById("submit-invoice-btn").addEventListener("click", handleInvoiceSubmit);
     
-    // --- بداية التعديل: ربط حدث البحث ---
+    // ربط التغيير في المحافظة لتحديث قائمة المناطق
+    document.getElementById("customer-province").addEventListener("change", renderRepOrderCreationView);
+    document.getElementById("customer-region").addEventListener("change", renderInvoiceItems);
+    
+    document.getElementById("submit-invoice-btn").addEventListener("click", handleInvoiceSubmit);
     document.getElementById("product-search-input").addEventListener("input", handleProductSearch);
-    // --- نهاية التعديل ---
     
     renderInvoiceItems();
 };
-///////////////////////////////////
-
-// --- دالة جديدة للبحث عن المنتجات في واجهة المندوب ---
-const handleProductSearch = (e) => {
-    const searchTerm = e.target.value.toLowerCase();
-    const productGrid = document.getElementById("product-grid");
-    if (!productGrid) return;
-    
-    const allProducts = state.products.filter(p => p.quantity > 0);
-    const filteredProducts = allProducts.filter(p => p.name.toLowerCase().includes(searchTerm));
-    
-    if (filteredProducts.length === 0) {
-        productGrid.innerHTML = '<p style="text-align: center; grid-column: 1 / -1;">لا توجد منتجات مطابقة للبحث.</p>';
-        return;
-    }
-    
-    productGrid.innerHTML = filteredProducts.map((p => `<div class="product-card"><img src="${p.imageUrl || "https://placehold.co/150x120/e2e8f0/e2e8f0?text=."}" alt="${p.name}"><div class="product-card-body"><h3>${p.name}</h3><button class="add-to-cart-btn" data-product-id="${p.id}">أضف للسلة</button></div></div>`)).join("");
-    
-    // إعادة ربط الأحداث للأزرار الجديدة
-    document.querySelectorAll(".add-to-cart-btn").forEach((btn => {
-        btn.addEventListener("click", (() => handleAddToCartClick(btn.dataset.productId)))
-    }));
-};
-
-// أضف هذه الدالة الجديدة في مكان مناسب ضمن الدوال الخاصة بالمندوب
-// --- دالة جديدة لحذف الفاتورة بالكامل (إضافة جديدة) ---
-
-////////////////////
-const handleAddToCartClick=e=>{if(currentInvoiceItems.find((t=>t.product.id==e)))return showToast("هذا المنتج موجود بالفعل في السلة.",!0);const t=state.products.find((t=>t.id==e));t&&(currentInvoiceItems.push({product:t,quantity:1,finalPrice:t.customerPrice}),renderInvoiceItems())};
-
-const renderInvoiceItems = () => {
-    const itemsContainer = document.getElementById("invoice-items-container");
-    const summaryContainer = document.getElementById("invoice-summary-container");
-    const submitBtn = document.getElementById("submit-invoice-btn");
-    if (!itemsContainer || !summaryContainer || !submitBtn) return;
-    if (currentInvoiceItems.length === 0) return itemsContainer.innerHTML = "<p>السلة فارغة.</p>", summaryContainer.innerHTML = "", void(submitBtn.disabled = !0);
-    itemsContainer.innerHTML = `<table id="invoice-items-table" style="width:100%"><thead><tr><th>المنتج</th><th>الكمية</th><th>السعر</th><th></th></tr></thead><tbody>${currentInvoiceItems.map(((item, index) => `<tr><td>${item.product.name}</td><td><input type="number" value="${item.quantity}" min="1" max="${item.product.quantity}" class="invoice-item-quantity" data-index="${index}" style="width: 60px; padding: 0.25rem;"></td><td><input type="number" value="${item.finalPrice}" min="0" class="invoice-item-price" data-index="${index}" style="width: 80px; padding: 0.25rem;"></td><td><button data-index="${index}" class="remove-item-btn button-danger" style="width:auto;padding:2px 8px;">X</button></td></tr>`)).join("")}</tbody></table>`;
-    submitBtn.disabled = !1;
-    const subtotal = currentInvoiceItems.reduce(((acc, item) => acc + item.quantity * item.finalPrice), 0);
-    const provinceSelect = document.getElementById("customer-province");
-    const deliveryCost = provinceSelect && provinceSelect.value === "كربلاء" ? 3000 : provinceSelect && provinceSelect.value !== "" ? 5000 : 0;
-    let existingDiscount = 0;
-    const discountInput = document.getElementById("invoice-discount");
-    if (discountInput) existingDiscount = parseFloat(discountInput.value) || 0;
-    summaryContainer.innerHTML = `<div class="invoice-summary"><p><span>الإجمالي الفرعي:</span> <span>${subtotal.toFixed(2)} د.ع</span></p><p><span>كلفة التوصيل:</span> <span>${deliveryCost.toFixed(2)} د.ع</span></p><div class="input-group" style="margin-bottom: 0.5rem;"><label for="invoice-discount" style="display:inline-block; margin-bottom:0;">الخصم:</label><input type="number" id="invoice-discount" value="${existingDiscount}" min="0" style="padding: 0.5rem; display: inline-block; width: auto;"></div><p class="final-total"><span>الإجمالي النهائي:</span> <span id="final-total-amount"></span></p></div>`;
-    const newDiscountInput = document.getElementById("invoice-discount");
-    const updateFinalTotal = () => {
-        const discount = parseFloat(newDiscountInput.value) || 0;
-        document.getElementById("final-total-amount").textContent = `${(subtotal - discount).toFixed(2)} د.ع`;
-    };
-    updateFinalTotal();
-    document.querySelectorAll(".remove-item-btn").forEach((btn => { btn.onclick = e => { currentInvoiceItems.splice(e.currentTarget.dataset.index, 1), renderInvoiceItems() } }));
-    document.querySelectorAll("input.invoice-item-quantity, input.invoice-item-price").forEach((input => {
-        input.onchange = e => {
-            const index = e.target.dataset.index;
-            if (e.target.classList.contains("invoice-item-quantity")) {
-                const newQuantity = parseInt(e.target.value);
-                const maxQuantity = parseInt(e.target.max);
-                currentInvoiceItems[index].quantity = Math.min(newQuantity, maxQuantity);
-            } else {
-                currentInvoiceItems[index].finalPrice = parseFloat(e.target.value);
-            }
-            renderInvoiceItems();
-        };
-    }));
-    if (newDiscountInput) newDiscountInput.oninput = updateFinalTotal;
-};
 
 const handleInvoiceSubmit = async () => {
-    if (currentInvoiceItems.length === 0) return showToast("الفاتورة فارغة!", !0);
+    // 1. جمع البيانات من الواجهة
+    if (currentInvoiceItems.length === 0) return showToast("الفاتورة فارغة!", true);
+    
+    // معلومات العميل
     const customerName = document.getElementById("customer-name").value;
     const customerPhone = document.getElementById("customer-phone").value;
     const customerAddress = document.getElementById("customer-address").value;
     const province = document.getElementById("customer-province").value;
+    const regionName = document.getElementById("customer-region").value;
     const notes = document.getElementById("invoice-notes").value;
+    
+    // معلومات التسعير والتوصيل
     const discountInput = document.getElementById("invoice-discount");
     const discount = discountInput ? parseFloat(discountInput.value) || 0 : 0;
-    if (!customerName || !customerPhone || !customerAddress || !province) return showToast("الرجاء إدخال معلومات الزبون كاملة، بما في ذلك المحافظة.", !0);
-    const deliveryCost = province === "كربلاء" ? 3000 : 5000;
-    const totalAmount = currentInvoiceItems.reduce(((acc, item) => acc + item.quantity * item.finalPrice), 0) - discount;
+    
+    // 2. حساب كلفة التوصيل والحصول على IDs الوسيط
+    const { cityId, regionId } = getAlWaseetIDs(province, regionName);
+    
+    if (!cityId || !regionId) {
+        return showToast("الرجاء اختيار المحافظة والمنطقة بشكل صحيح لربط شركة التوصيل.", true);
+    }
+    
+    // NOTE: يجب أن تأتي تكلفة التوصيل من API الوسيط، ولكننا سنستخدم قيمة ثابتة هنا لتبسيط الاختبار
+    const deliveryCost = 5000; 
+    
+    const subtotal = currentInvoiceItems.reduce(((acc, item) => acc + item.quantity * item.finalPrice), 0);
+    const totalAmount = subtotal - discount + deliveryCost; // الإجمالي النهائي مع التوصيل
+    
+    if (!customerName || !customerPhone || !customerAddress || !province) {
+        return showToast("الرجاء إدخال معلومات الزبون كاملة.", true);
+    }
+    
     showLoader();
-    const itemsForRPC = currentInvoiceItems.map((item => ({ product_id: parseInt(item.product.id), quantity: item.quantity, final_price: item.finalPrice, product_name: item.product.name, cost_price: item.product.costPrice, rep_price: item.product.repPrice })));
+    
+    // 3. تجهيز بيانات الأطراف لـ RPC
+    const itemsForRPC = currentInvoiceItems.map((item => ({ 
+        product_id: item.product.id, 
+        quantity: item.quantity, 
+        final_price: item.finalPrice, 
+        product_name: item.product.name, 
+        cost_price: item.product.costPrice, 
+        rep_price: item.product.repPrice 
+    })));
+
+    // 4. استدعاء دالة Supabase RPC لتسجيل البيانات
     try {
-        const { error } = await supabase.rpc("submit_invoice", { p_invoice_id: `INV-${Date.now()}-${Math.floor(1e3 * Math.random())}`, p_items: itemsForRPC, p_rep_id: state.currentUser.id, p_rep_name: state.currentUser.name, p_customer_name: customerName, p_customer_phone: customerPhone, p_customer_address: customerAddress, p_total_amount: totalAmount, p_discount: discount, p_notes: notes, p_province: province, p_delivery_cost: deliveryCost });
-        if (error) throw error;
-        showToast("تم تثبيت الطلب بنجاح."), currentInvoiceItems = [], await fetchAllData(), switchRepTab("add-order");
+        const newInvoiceId = `INV-${Date.now()}-${Math.floor(1e3 * Math.random())}`;
+
+        const { data: orderHeaderId, error: rpcError } = await supabase.rpc("submit_invoice", { 
+            p_invoice_id: newInvoiceId, 
+            p_items: itemsForRPC, 
+            p_rep_id: state.currentUser.id, 
+            p_rep_name: state.currentUser.name, 
+            p_customer_name: customerName, 
+            p_customer_phone: customerPhone, 
+            p_customer_address: customerAddress, 
+            p_total_amount: totalAmount, 
+            p_discount: discount, 
+            p_notes: notes, 
+            p_province: province, 
+            p_delivery_cost: deliveryCost,
+            // --- تمرير IDs الوسيط إلى SQL ---
+            p_alwaseet_city_id: cityId,
+            p_alwaseet_region_id: regionId
+        });
+
+        if (rpcError) throw rpcError;
+        
+        // 5. إرسال الطلب لشركة التوصيل (الوسيط)
+        const repData = {
+            internal_order_id: orderHeaderId, // الـ ID الذي أعادته دالة الـ RPC
+            client_name: customerName,
+            client_mobile: customerPhone,
+            alwaseet_city_id: cityId,
+            alwaseet_region_id: regionId,
+            location_desc: customerAddress,
+            total_price: totalAmount, // المبلغ الكلي الذي يجب تحصيله
+            // ... (باقي حقول API الوسيط)
+        };
+        // NOTE: يجب استدعاء دالة createAlwaseetOrder (من Node.js module) هنا
+
+        showToast("تم تثبيت الطلب بنجاح.");
+        currentInvoiceItems = []; 
+        await fetchAllData();
+        renderRepApp(); 
     } catch (e) {
-        showToast(`فشل تثبيت الطلب: ${e.message}`, !0);
+        showToast(`فشل تثبيت الطلب: ${e.message}`, true);
     } finally {
         hideLoader();
     }
 };
-////////////////////////////
 
-const renderRepPreviousOrdersView = e => {
-    const n = state.sales.reduce(((e, t) => (e[t.invoiceId] || (e[t.invoiceId] = []), e[t.invoiceId].push(t), e)), {}),
-        a = Object.values(n);
-    e.innerHTML = `<div class="content-header"><h2>الطلبات السابقة (${a.length})</h2></div><table><thead><tr><th>رقم الفاتورة</th><th>الزبون</th><th>المحافظة</th><th>الإجمالي</th><th>الحالة</th><th>تاريخ الإنشاء</th><th>الإجراءات</th></tr></thead><tbody>` + a.map((e => {
-        const n = e[0],
-            t = n.invoiceId,
-            r = n.customerName,
-            i = n.province,
-            o = (e.reduce(((e, t) => e + t.quantity * t.finalPrice), 0) - (n.discount || 0) + (n.delivery_cost || 0)).toFixed(2),
-            s = getStatusText(n.status),
-            l = new Date(n.created_at).toLocaleDateString();
-        // تم إضافة زر الحذف هنا
-        return `<tr><td>${t}</td><td>${r}</td><td>${i}</td><td>${o} د.ع</td><td><span class="${getStatusClass(n.status)}">${s}</span></td><td>${l}</td><td class="order-actions"><button onclick="editOrder('${n.invoiceId}')">تعديل</button><button class="button-danger delete-btn" onclick="handleDeleteOrder('${n.invoiceId}')">حذف</button></td></tr>`
-    })).join("") + "</tbody></table>"
-};
+// ... (باقي الدوال) ...
 
+// **السطر الذي يجب إضافته:** اجعل الدالة متاحة للنطاق العام للنافذة
+window.handleInvoiceSubmit = handleInvoiceSubmit;
+```
+```javascript
+window.handleDeleteOrder = handleDeleteOrder;
 
-////////////////////////////
+////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////
 // دالة حذف طلب المندوب بالكامل (إضافة جديدة)
 ///////////////////////////////////////////////////////
 // في ملف app.js، بعد تعريف الدالة مباشرةً
 const handleDeleteOrder = async (invoiceId) => {
-    // ... محتوى الدالة الذي قمت بتعديله سابقاً ...
-    const confirmed = await showConfirmationModal(`هل أنت متأكد من حذف الطلب رقم #${invoiceId}؟ سيتم حذف جميع تفاصيل الفاتورة من النظام، وإرجاع المنتجات إلى المخزون.`);
-    if (!confirmed) return;
-    
-    showLoader();
+    // ... محتوى الدالة الذي قمت بتعديله سابقاً ...
+    const confirmed = await showConfirmationModal(`هل أنت متأكد من حذف الطلب رقم #${invoiceId}؟ سيتم حذف جميع تفاصيل الفاتورة من النظام، وإرجاع المنتجات إلى المخزون.`);
+    if (!confirmed) return;
+    
+    showLoader();
 
-    try {
-        // 2. الحصول على تفاصيل الطلب قبل حذفه
-        const salesItems = state.sales.filter(s => s.invoiceId === invoiceId && s.repId === state.currentUser.id);
-        
-        if (salesItems.length === 0) {
-            throw new Error("لم يتم العثور على الطلب أو أنه ليس من صلاحية هذا المندوب.");
-        }
+    try {
+        // 2. الحصول على تفاصيل الطلب قبل حذفه
+        const salesItems = state.sales.filter(s => s.invoiceId === invoiceId && s.repId === state.currentUser.id);
+        
+        if (salesItems.length === 0) {
+            throw new Error("لم يتم العثور على الطلب أو أنه ليس من صلاحية هذا المندوب.");
+        }
 
-        //if (orderStatus === 'تم الاستلام') {
-       //     throw new Error("لا يمكن حذف طلب تم استلامه (delivered).");
-       // }
-        // 3. حذف جميع صفوف الطلب
-        const { error: deleteSalesError } = await supabase
-            .from('sales')
-            .delete()
-            .eq('invoiceId', invoiceId)
-            .eq('repId', state.currentUser.id);
+        //if (orderStatus === 'تم الاستلام') {
+       //     throw new Error("لا يمكن حذف طلب تم استلامه (delivered).");
+       // }
+        // 3. حذف جميع صفوف الطلب
+        const { error: deleteSalesError } = await supabase
+            .from('sales')
+            .delete()
+            .eq('invoiceId', invoiceId)
+            .eq('repId', state.currentUser.id);
 
-        if (deleteSalesError) throw deleteSalesError;
+        if (deleteSalesError) throw deleteSalesError;
 
-        // 4. إرجاع الكميات إلى المخزون
-        const updatePromises = salesItems.map(item => {
-            const product = state.products.find(p => p.id === item.productId);
-            if (!product) {
-                console.warn(`Product ID ${item.productId} not found for inventory update.`);
-                return null;
-            }
-            const newQuantity = product.quantity + item.quantity;
-            
-            return supabase.from('products')
-                .update({ quantity: newQuantity })
-                .eq('id', item.productId);
-        }).filter(p => p !== null);
+        // 4. إرجاع الكميات إلى المخزون
+        const updatePromises = salesItems.map(item => {
+            const product = state.products.find(p => p.id === item.productId);
+            if (!product) {
+                console.warn(`Product ID ${item.productId} not found for inventory update.`);
+                return null;
+            }
+            const newQuantity = product.quantity + item.quantity;
+            
+            return supabase.from('products')
+                .update({ quantity: newQuantity })
+                .eq('id', item.productId);
+        }).filter(p => p !== null);
 
-        const updateResults = await Promise.all(updatePromises);
-        
-        const updateError = updateResults.find(result => result && result.error);
-        if (updateError) throw updateError.error;
+        const updateResults = await Promise.all(updatePromises);
+        
+        const updateError = updateResults.find(result => result && result.error);
+        if (updateError) throw updateError.error;
 
-        showToast(`تم حذف الطلب رقم #${invoiceId} بنجاح وإرجاع المنتجات إلى المخزون.`);
-        await fetchAllData();
-        renderRepApp();
+        showToast(`تم حذف الطلب رقم #${invoiceId} بنجاح وإرجاع المنتجات إلى المخزون.`);
+        await fetchAllData();
+        renderRepApp();
 
-    } catch (error) {
-        showToast(`فشل حذف الطلب: ${error.message}`, true);
-    } finally {
-        hideLoader();
-    }
+    } catch (error) {
+        showToast(`فشل حذف الطلب: ${error.message}`, true);
+    } finally {
+        hideLoader();
+    }
 };
 
 // **السطر الذي يجب إضافته:** اجعل الدالة متاحة للنطاق العام للنافذة
 window.handleDeleteOrder = handleDeleteOrder;
-
-////////////////////////////////////////////////////////////
-////////////////////////////////////////////////
-////////////////////////////////////////////////
-const renderRepReportsView = e => {
-    const deliveredSales = state.sales.filter((s => s.status === "delivered" && !s.profit_received));
-    const groupedDeliveredOrders = deliveredSales.reduce(((acc, sale) => (acc[sale.invoiceId] || (acc[sale.invoiceId] = []), acc[sale.invoiceId].push(sale), acc)), {});
-    const deliveredOrders = Object.values(groupedDeliveredOrders);
-    const totalProfit = calculateRepProfit(deliveredSales);
-    if (e.innerHTML = `<div class="content-header"><h2>تقارير الأرباح (القابلة للاستلام)</h2><div><button id="print-selected-report-btn" class="button-secondary" style="width: auto;" disabled>طباعة المحدد</button><button id="receive-selected-profits-btn" class="button-success" style="width: auto; margin-right: 10px;" disabled>استلام أرباح المحدد</button></div></div><div class="report-summary"><p>إجمالي الأرباح الصافية القابلة للاستلام: <strong>${totalProfit} د.ع</strong></p></div><h3 style="margin-top: 2rem;">قائمة الطلبات المستلمة (غير مستلمة الأرباح) (${deliveredOrders.length})</h3><div id="profit-report-table-container"></div>`, 0 === deliveredOrders.length) return void(document.getElementById("profit-report-table-container").innerHTML = "<p>لا توجد أرباح قابلة للاستلام حالياً.</p>");
-    document.getElementById("profit-report-table-container").innerHTML = `<table><thead><tr><th><input type="checkbox" id="select-all-orders"></th><th>الزبون / الفاتورة</th><th>رقم الزبون</th><th>تكلفة المندوب</th><th>سعر البيع</th><th>الربح الصافي</th></tr></thead><tbody>${deliveredOrders.map((orderItems => { const firstItem = orderItems[0], repCost = orderItems.reduce(((sum, item) => sum + item.quantity * (item.repPrice || 0)), 0), customerRevenue = orderItems.reduce(((sum, item) => sum + item.quantity * item.finalPrice), 0), orderDiscount = firstItem.discount || 0, orderProfit = customerRevenue - repCost - orderDiscount - (firstItem.delivery_cost || 0); return `<tr data-invoice-id="${firstItem.invoiceId}"><td><input type="checkbox" class="order-checkbox" data-invoice-id="${firstItem.invoiceId}"></td><td><div>${firstItem.customerName}</div><small>فاتورة: ${firstItem.invoiceId}</small></td><td>${firstItem.customerPhone}</td><td>${repCost.toFixed(2)} د.ع</td><td>${customerRevenue.toFixed(2)} د.ع</td><td><strong style="color: ${orderProfit >= 0 ? "#16a34a" : "#dc2626"}">${orderProfit.toFixed(2)} د.ع</strong></td></tr>` })).join("")}</tbody></table>`;
-    const printBtn = document.getElementById("print-selected-report-btn"),
-        receiveBtn = document.getElementById("receive-selected-profits-btn"),
-        selectAllCheckbox = document.getElementById("select-all-orders"),
-        orderCheckboxes = document.querySelectorAll(".order-checkbox"),
-        updateButtonState = () => { const checkedCount = document.querySelectorAll(".order-checkbox:checked").length; printBtn.disabled = 0 === checkedCount, receiveBtn.disabled = 0 === checkedCount, printBtn.textContent = `طباعة المحدد (${checkedCount})`, receiveBtn.textContent = `استلام أرباح المحدد (${checkedCount})` };
-    selectAllCheckbox.addEventListener("change", (e => { orderCheckboxes.forEach((cb => { cb.checked = e.target.checked })), updateButtonState() })), orderCheckboxes.forEach((cb => { cb.addEventListener("change", updateButtonState) })), printBtn.addEventListener("click", (() => { const selectedInvoiceIds = Array.from(document.querySelectorAll(".order-checkbox:checked")).map((cb => cb.dataset.invoiceId)); if (0 === selectedInvoiceIds.length) return void showToast("الرجاء تحديد طلب واحد على الأقل للطباعة.", !0); const selectedOrders = deliveredOrders.filter((order => selectedInvoiceIds.includes(order[0].invoiceId))); printInvoice(selectedOrders, "full_report") })), receiveBtn.addEventListener("click", handleReceiveSelectedProfits), updateButtonState();
-};
-
-const handleReceiveSelectedProfits = async () => {
-    const selectedInvoiceIds = Array.from(document.querySelectorAll(".order-checkbox:checked")).map((e => e.dataset.invoiceId));
-    if (0 === selectedInvoiceIds.length) return showToast("الرجاء تحديد الطلبات التي تود استلام أرباحها.", !0);
-    const pin = "3491445", enteredPin = prompt("الرجاء إدخال الرمز السري للمحاسب للمتابعة:");
-    if (null === enteredPin) return;
-    if (enteredPin !== pin) return showToast("الرمز السري غير صحيح. تم إلغاء العملية.", !0);
-    const confirmed = await showConfirmationModal(`هل أنت متأكد من استلام أرباح (${selectedInvoiceIds.length}) طلبات؟ لا يمكن التراجع عن هذه العملية.`);
-    if (!confirmed) return;
-    showLoader();
-    try {
-        const { error } = await supabase.from("sales").update({ profit_received: !0 }).in("invoiceId", selectedInvoiceIds);
-        if (error) throw error;
-        showToast("تم تسجيل استلام الأرباح بنجاح."), await fetchAllData(), switchRepTab("reports");
-    } catch (e) {
-        showToast(`حدث خطأ: ${e.message}`, !0);
-    } finally {
-        hideLoader();
-    }
-};
-
-const calculateRepProfit = e => {
-    let t = 0, n = 0;
-    e.forEach((e => { const a = e.repPrice || 0; t += a * e.quantity, n += e.finalPrice * e.quantity }));
-    const a = e.reduce(((e, t) => (e[t.invoiceId] || (e[t.invoiceId] = t.discount || 0), e)), {}),
-        r = Object.values(a).reduce(((e, t) => e + t), 0),
-        i = e.reduce(((e, t) => (e[t.invoiceId] || (e[t.invoiceId] = t.delivery_cost || 0), e)), {}),
-        d = Object.values(i).reduce(((e, t) => e + t), 0);
-    return (n - t - r - d).toFixed(2);
-};
-
-// =================================================================
-// ===== PACKER-SPECIFIC FUNCTIONS =================================
-// =================================================================
-
-const renderPackerApp = async () => {
-    loginSection.classList.add('hidden');
-    packerContainer.classList.remove('hidden');
-    packerContainer.innerHTML = `<div class="container"><header class="app-header"><h1>واجهة المجهز</h1><button id="logout-btn" class="button-danger">تسجيل الخروج</button></header><main><div class="tabs"><button class="tab-button active" data-tab="pending">طلبات قيد التجهيز</button><button class="tab-button" data-tab="followup">متابعة الطلبات</button></div><div id="packer-content-area" style="margin-top: 1.5rem;"></div></main></div>`;
-    document.getElementById('logout-btn').addEventListener('click', handleLogout);
-    document.querySelectorAll("#packer-container .tab-button").forEach(btn => {
-        btn.addEventListener('click', () => switchPackerTab(btn.dataset.tab));
-    });
-    await fetchAllData();
-    switchPackerTab('pending');
-};
-
-const switchPackerTab = (tab) => {
-    document.querySelectorAll("#packer-container .tab-button").forEach(btn => {
-        btn.classList.toggle("active", btn.dataset.tab === tab);
-    });
-    const container = document.getElementById("packer-content-area");
-    if (tab === 'pending') {
-        renderPackerPendingView(container);
-    } else if (tab === 'followup') {
-        renderPackerFollowupView(container);
-    }
-};
-
-
-//////////////////////////////////////////////////////////
-const printInvoice = (ordersData, type = 'order') => {
-    if (!ordersData || ordersData.length === 0) return showToast("لا يمكن طباعة محتوى فارغ.", true);
-    const printWindow = window.open('', '', 'height=600,width=800');
-    printWindow.document.write('<html><head><title>تقرير الطباعة</title>');
-    printWindow.document.write('<style>@media print { .no-print { display: none; } .page-break { page-break-after: always; } } body { font-family: Tahoma, sans-serif; font-size: 14px; direction: rtl; text-align: right; } table { width: 100%; border-collapse: collapse; margin-top: 15px; } th, td { border: 1px solid #ccc; padding: 8px; text-align: right; } thead th { background-color: #f2f2f2; } h2, h3 { text-align: center; } .summary-box { padding: 10px; background-color: #e6ffed; border: 1px solid #b2e2c5; margin: 15px 0; text-align: center; } .details-list { margin: 0; padding: 0 1.5rem; } .print-container { padding: 20px; border: 1px solid #333; margin-bottom: 20px; }</style>');
-    printWindow.document.write('</head><body>');
-    if (type === 'order') {
-        const orderItems = ordersData[0], firstItem = orderItems[0];
-        let customerRevenue = 0;
-        const detailsTable = `<table><thead><tr><th>المنتج</th><th>الكمية</th><th>السعر (فردي)</th><th>الإجمالي</th></tr></thead><tbody>${orderItems.map(item => (customerRevenue += item.quantity * item.finalPrice, `<tr><td>${item.productName}</td><td>${item.quantity}</td><td>${item.finalPrice.toFixed(2)} د.ع</td><td>${(item.quantity * item.finalPrice).toFixed(2)} د.ع</td></tr>`)).join("")}</tbody></table>`;
-        const discount = firstItem.discount || 0, finalTotal = customerRevenue - discount, date = new Date(firstItem.created_at).toLocaleDateString('ar-EG');
-        printWindow.document.write(`<div class="print-container"><h2 style="text-align: center; border-bottom: 2px solid #ccc; padding-bottom: 10px;">فاتورة مبيعات</h2><p><strong>رقم الفاتورة:</strong> ${firstItem.invoiceId}</p><p><strong>التاريخ:</strong> ${date}</p><hr><h3>معلومات الزبون</h3><p><strong>الاسم:</strong> ${firstItem.customerName}</p><p><strong>الهاتف:</strong> ${firstItem.customerPhone}</p><p><strong>العنوان:</strong> ${firstItem.customerAddress}</p><hr>${detailsTable}<hr><p style="text-align: left;"><strong>الإجمالي الفرعي:</strong> ${customerRevenue.toFixed(2)} د.ع</p><p style="text-align: left;"><strong>الخصم:</strong> ${discount.toFixed(2)} د.ع</p><h3 style="text-align: left; color: #16a34a;">الإجمالي النهائي: ${finalTotal.toFixed(2)} د.ع</h3><p style="text-align: center; margin-top: 20px;">شكراً لتعاملكم معنا.</p></div>`);
-    } else if (type === 'profit') {
-        const orderItems = ordersData[0], firstItem = orderItems[0];
-        let repCost = 0, customerRevenue = 0;
-        const detailsTable = `<table><thead><tr><th>المنتج</th><th>الكمية</th><th>سعر المندوب</th><th>سعر البيع</th><th>ربح الوحدة</th><th>الربح الكلي</th></tr></thead><tbody>${orderItems.map(item => { const unitProfit = item.finalPrice - (item.repPrice || 0), totalItemProfit = unitProfit * item.quantity; return repCost += item.quantity * (item.repPrice || 0), customerRevenue += item.quantity * item.finalPrice, `<tr><td>${item.productName}</td><td>${item.quantity}</td><td>${(item.repPrice || 0).toFixed(2)} د.ع</td><td>${item.finalPrice.toFixed(2)} د.ع</td><td>${unitProfit.toFixed(2)} د.ع</td><td>${totalItemProfit.toFixed(2)} د.ع</td></tr>` }).join("")}</tbody></table>`;
-        const discount = firstItem.discount || 0, finalTotal = customerRevenue - discount, profit = finalTotal - repCost, date = new Date(firstItem.created_at).toLocaleDateString('ar-EG');
-        printWindow.document.write(`<div class="print-container"><h2 style="text-align: center; border-bottom: 2px solid #ccc; padding-bottom: 10px;">تقرير ربح الفاتورة</h2><p><strong>رقم الفاتورة:</strong> ${firstItem.invoiceId}</p><p><strong>التاريخ:</strong> ${date}</p><p><strong>اسم المندوب:</strong> ${firstItem.repName || state.currentUser?.name || 'غير معروف'}</p><hr><h3>معلومات الزبون</h3><p><strong>الاسم:</strong> ${firstItem.customerName}</p><p><strong>الهاتف:</strong> ${firstItem.customerPhone}</p><hr>${detailsTable}<hr><p style="text-align: left;"><strong>الإجمالي النهائي (للزبون):</strong> ${finalTotal.toFixed(2)} د.ع</p><p style="text-align: left;"><strong>تكلفة البضاعة على المندوب:</strong> ${repCost.toFixed(2)} د.ع</p><h3 style="text-align: left; color: #007bff;">الربح الصافي للمندوب: ${profit.toFixed(2)} د.ع</h3></div>`);
-    } else if (type === 'full_report') {
-        let totalProfit = 0, allItems = [], totalRepCost = 0, totalCustomerRevenue = 0, totalDiscount = 0;
-        ordersData.forEach(orderItems => { const firstItem = orderItems[0], orderRepCost = orderItems.reduce(((sum, item) => sum + item.quantity * (item.repPrice || 0)), 0), orderCustomerRevenue = orderItems.reduce(((sum, item) => sum + item.quantity * item.finalPrice), 0), orderDiscount = firstItem.discount || 0, orderProfit = orderCustomerRevenue - orderRepCost - orderDiscount; totalRepCost += orderRepCost, totalCustomerRevenue += orderCustomerRevenue, totalDiscount += orderDiscount, totalProfit += orderProfit, allItems.push({ invoiceId: firstItem.invoiceId, customerName: firstItem.customerName, customerPhone: firstItem.customerPhone, repCost: orderRepCost, customerRevenue: orderCustomerRevenue, orderProfit: orderProfit }) });
-        printWindow.document.write(`<div class="print-container"><h2 style="border-bottom: 2px solid #ccc; padding-bottom: 10px;">تقرير الأرباح الشامل للطلبات المحددة</h2><p><strong>تاريخ التقرير:</strong> ${new Date().toLocaleDateString('ar-EG')}</p><p><strong>اسم المندوب:</strong> ${state.currentUser?.name || 'غير معروف'}</p><div class="summary-box"><p style="font-size: 1.2rem; margin: 0;"><strong>إجمالي الأرباح الصافية:</strong> <span style="color: #007bff;">${totalProfit.toFixed(2)} د.ع</span></p></div><h3>تفاصيل الطلبات (${allItems.length})</h3><table><thead><tr><th>الفاتورة</th><th>الزبون</th><th>الهاتف</th><th>تكلفة المندوب</th><th>سعر البيع</th><th>الربح الصافي</th></tr></thead><tbody>${allItems.map(item => `<tr><td>${item.invoiceId}</td><td>${item.customerName}</td><td>${item.customerPhone}</td><td>${item.repCost.toFixed(2)} د.ع</td><td>${item.customerRevenue.toFixed(2)} د.ع</td><td style="color: ${item.orderProfit >= 0 ? '#16a34a' : '#dc2626'}; font-weight: bold;">${item.orderProfit.toFixed(2)} د.ع</td></tr>`).join("")}</tbody></table><hr><div style="text-align: left;"><p><strong>الإجمالي الكلي للتكلفة:</strong> ${totalRepCost.toFixed(2)} د.ع</p><p><strong>الإجمالي الكلي للبيع:</strong> ${totalCustomerRevenue.toFixed(2)} د.ع</p><p><strong>الإجمالي الكلي للخصم:</strong> ${totalDiscount.toFixed(2)} د.ع</p><h3 style="color: #007bff;">الإجمالي الصافي للأرباح: ${totalProfit.toFixed(2)} د.ع</h3></div></div>`);
-    } else if (type === 'packing_slip') {
-        let allSlipsContent = '';
-        ordersData.forEach(((orderItems, index) => { 
-            const firstItem = orderItems[0];
-            const isLastItem = index === ordersData.length - 1; 
-            allSlipsContent += `
-                <div class="print-container ${isLastItem ? '' : 'page-break'}">
-                    <h2 style="border-bottom: 2px solid #ccc; padding-bottom: 10px;">قسيمة تجهيز طلب</h2>
-                    <p><strong>رقم الفاتورة:</strong> ${firstItem.invoiceId}</p>
-                    <p><strong>تاريخ الطلب:</strong> ${new Date(firstItem.created_at).toLocaleString('ar-EG')}</p>
-                    <hr>
-                    <h3>معلومات الزبون</h3>
-                    <p><strong>الاسم:</strong> ${firstItem.customerName}</p>
-                    <p><strong>الهاتف:</strong> ${firstItem.customerPhone}</p>
-                    <p><strong>العنوان:</strong> ${firstItem.customerAddress} - ${firstItem.province}</p>
-                    
-                    ${firstItem.notes ? `<hr><h3>الملاحظات</h3><p style="background-color: #fffbdd; padding: 10px; border-radius: 4px; border: 1px solid #ffeb3b;">${firstItem.notes}</p>` : ''}
-                    
-                    <hr>
-                    <h3>المنتجات المطلوبة</h3>
-                    <table>
-                        <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر البيع</th></tr></thead>
-                        <tbody>${orderItems.map(item => `<tr><td>${item.productName}</td><td><strong>${item.quantity}</strong></td><td>${item.finalPrice.toFixed(2)} د.ع</td></tr>`).join("")}</tbody>
-                        </table>
-
-                    <hr>
-                    <div style="text-align: left; margin-top: 15px;">
-                        <h3 style="color: #16a34a;">المبلغ الإجمالي مع التوصيل: ${(firstItem.totalAmount || t.delivery_cost).toFixed(2)} د.ع</h3>
-                    </div>
-                    </div>
-            `;
-        }));
-        printWindow.document.write(allSlipsContent);
-    }
-    printWindow.document.write('</body></html>'), printWindow.document.close(), printWindow.focus(), printWindow.print();
-};
-
-///////////////////////////////////////////////////////////////////
-
-const renderPackerPendingView = (container) => {
-    const groupedOrders = state.sales.reduce(((acc, sale) => ((acc[sale.invoiceId] = acc[sale.invoiceId] || []).push(sale), acc)), {});
-    const allPendingOrders = Object.values(groupedOrders).filter(o => o[0].status === 'pending');
-    const repsWithPendingOrders = [...new Map(allPendingOrders.flat().filter(sale => sale.repId && sale.repName).map(sale => [sale.repId, { id: sale.repId, name: sale.repName }])).values()];
-    
-    // --- بداية التعديل: إضافة فلاتر التاريخ وتغيير الترتيب ---
-    container.innerHTML = `<div class="content-header"><h2>الطلبات قيد التجهيز (<span id="pending-order-count">${allPendingOrders.length}</span>)</h2>
-    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; width: 100%;">
-        <div style="flex: 1 1 150px;"><label for="rep-filter-pending" style="font-size: 0.9rem;">المندوب:</label><select id="rep-filter-pending" style="width: 100%; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithPendingOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div>
-        <div style="flex: 1 1 150px; align-self: flex-end;"><button id="bulk-process-btn" class="button-success" style="width: 100%;" disabled>تجهيز وطباعة المحدد (0)</button></div>
-        
-        <div style="flex: 1 1 150px;"><label for="start-date-pending" style="font-size: 0.9rem;">من تاريخ:</label><input type="date" id="start-date-pending" style="width: 100%; padding: 0.5rem;"></div>
-        <div style="flex: 1 1 150px;"><label for="end-date-pending" style="font-size: 0.9rem;">إلى تاريخ:</label><input type="date" id="end-date-pending" style="width: 100%; padding: 0.5rem;"></div>
-        <div style="flex: 1 1 auto; align-self: flex-end;"><button id="clear-date-filter-pending-btn" class="button-secondary" style="width: 100%; padding: 0.5rem; font-size: 0.9rem;">مسح التاريخ</button></div>
-
-        <div style="width: 100%; margin-top: 0.5rem;"><label for="packer-customer-search-pending" style="font-size: 0.9rem;">البحث باسم الزبون:</label><input type="text" id="packer-customer-search-pending" placeholder="اكتب اسم الزبون..."></div>
-    </div></div><table><thead><tr><th><input type="checkbox" id="select-all-pending-orders"></th><th>الزبون / الفاتورة</th><th>المنتجات</th><th>تغيير فردي</th></tr></thead><tbody id="pending-orders-tbody"></tbody></table>`;
-    // --- نهاية التعديل ---
-
-    const renderTableBody = (ordersToRender) => {
-        const tbody = document.getElementById('pending-orders-tbody'), countSpan = document.getElementById('pending-order-count');
-        if (!tbody || !countSpan) return;
-        countSpan.textContent = ordersToRender.length;
-        tbody.innerHTML = ordersToRender.length > 0 ? ordersToRender.map(orderItems => { const firstItem = orderItems[0]; return `<tr><td><input type="checkbox" class="packer-order-checkbox" data-invoice-id="${firstItem.invoiceId}"></td><td><div>${firstItem.customerName}</div><small>${firstItem.invoiceId}</small></td><td><ul class="item-list-in-table">${orderItems.map(item => `<li>${item.productName} (الكمية: ${item.quantity})</li>`).join('')}</ul></td><td><select class="status-changer" data-invoice-id="${firstItem.invoiceId}" data-old-status="${firstItem.status}"><option value="pending" selected>قيد التجهيز</option><option value="prepared">تم التجهيز</option><option value="cancelled">إلغاء</option></select></td></tr>` }).join('') : `<tr><td colspan="4" style="text-align: center;">لا توجد طلبات تطابق هذا الفلتر.</td></tr>`;
-        attachPendingViewListeners(ordersToRender);
-    };
-    const attachPendingViewListeners = (currentOrders) => {
-        const bulkProcessBtn = document.getElementById('bulk-process-btn'), selectAllCheckbox = document.getElementById('select-all-pending-orders'), orderCheckboxes = document.querySelectorAll('.packer-order-checkbox');
-        const updateButtonState = () => { const checkedCount = document.querySelectorAll('.packer-order-checkbox:checked').length; if (bulkProcessBtn) bulkProcessBtn.disabled = checkedCount === 0, bulkProcessBtn.textContent = `تجهيز وطباعة المحدد (${checkedCount})`; if (selectAllCheckbox) selectAllCheckbox.checked = checkedCount > 0 && checkedCount === orderCheckboxes.length; };
-        if (selectAllCheckbox) selectAllCheckbox.addEventListener('change', (e => { orderCheckboxes.forEach(checkbox => checkbox.checked = e.target.checked), updateButtonState() }));
-        orderCheckboxes.forEach(checkbox => checkbox.addEventListener('change', updateButtonState));
-        if (bulkProcessBtn) bulkProcessBtn.addEventListener('click', (() => handleBulkProcessOrders(currentOrders)));
-        document.querySelectorAll('.status-changer').forEach(select => select.addEventListener('change', (e => handleUpdateOrderStatus(e, 'pending'))));
-        updateButtonState();
-    };
-
-    // --- بداية التعديل: تفعيل الفلاتر (مندوب + بحث + تاريخ) ---
-    const repFilter = document.getElementById('rep-filter-pending');
-    const searchInput = document.getElementById('packer-customer-search-pending');
-    const startDateInput = document.getElementById('start-date-pending');
-    const endDateInput = document.getElementById('end-date-pending');
-    const clearDateBtn = document.getElementById('clear-date-filter-pending-btn');
-    
-    const applyPackerFilters = () => {
-        const selectedRepId = repFilter.value;
-        const searchTerm = searchInput.value.toLowerCase();
-        
-        const startDateVal = startDateInput.value;
-        const endDateVal = endDateInput.value;
-        const startDate = startDateVal ? new Date(startDateVal) : null;
-        const endDate = endDateVal ? new Date(endDateVal) : null;
-        
-        if (startDate) startDate.setHours(0, 0, 0, 0);
-        if (endDate) endDate.setHours(23, 59, 59, 999);
-        
-        let filteredOrders = allPendingOrders;
-        
-        if (selectedRepId !== 'all') {
-            filteredOrders = filteredOrders.filter(order => order[0].repId == selectedRepId);
-        }
-        
-        if (searchTerm) {
-            filteredOrders = filteredOrders.filter(order => order[0].customerName.toLowerCase().includes(searchTerm));
-        }
-        
-        if (startDate) {
-            filteredOrders = filteredOrders.filter(order => new Date(order[0].created_at) >= startDate);
-        }
-        if (endDate) {
-            filteredOrders = filteredOrders.filter(order => new Date(order[0].created_at) <= endDate);
-        }
-        
-        renderTableBody(filteredOrders);
-    };
-
-    repFilter.addEventListener('change', applyPackerFilters);
-    searchInput.addEventListener('input', applyPackerFilters);
-    startDateInput.addEventListener('change', applyPackerFilters);
-    endDateInput.addEventListener('change', applyPackerFilters);
-    clearDateBtn.addEventListener('click', () => {
-        startDateInput.value = '';
-        endDateInput.value = '';
-        applyPackerFilters();
-    });
-    
-    applyPackerFilters(); // العرض الأولي
-    // --- نهاية التعديل ---
-};
-
-
-
-
-///////////////////////////////////////////////////
-
-const renderPackerFollowupView = (container) => {
-    const groupedOrders = state.sales.reduce(((acc, sale) => ((acc[sale.invoiceId] = acc[sale.invoiceId] || []).push(sale), acc)), {});
-    const allFollowupOrders = Object.values(groupedOrders).filter(o => ['prepared', 'shipped'].includes(o[0].status));
-    const repsWithFollowupOrders = [...new Map(allFollowupOrders.flat().filter(sale => sale.repId && sale.repName).map(sale => [sale.repId, { id: sale.repId, name: sale.repName }])).values()];
-    
-    // --- بداية التعديل: إضافة فلاتر التاريخ وتغيير الترتيب ---
-    container.innerHTML = `<div class="content-header"><h2>متابعة الطلبات (<span id="followup-order-count">${allFollowupOrders.length}</span>)</h2>
-    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; width: 100%;">
-        <div style="flex: 1 1 150px;"><label for="rep-filter-followup" style="font-size: 0.9rem;">المندوب:</label><select id="rep-filter-followup" style="width: 100%; padding: 0.5rem;"><option value="all">كل المندوبين</option>${repsWithFollowupOrders.map(rep => `<option value="${rep.id}">${rep.name}</option>`).join('')}</select></div>
-        <div style="flex: 1 1 150px;"><label for="bulk-status-changer" style="font-size: 0.9rem;">تحديث جماعي:</label><select id="bulk-status-changer" style="width: 100%; padding: 0.5rem;"><option value="">-- اختر الحالة --</option><option value="shipped">تم الشحن</option><option value="delivered">تم الاستلام</option><option value="cancelled">ملغي</option></select></div>
-        <div style="flex: 1 1 auto; align-self: flex-end;"><button id="bulk-update-btn" class="button-secondary" style="width: 100%;" disabled>تحديث المحدد (0)</button></div>
-        
-        <div style="flex: 1 1 150px;"><label for="start-date-followup" style="font-size: 0.9rem;">من تاريخ:</label><input type="date" id="start-date-followup" style="width: 100%; padding: 0.5rem;"></div>
-        <div style="flex: 1 1 150px;"><label for="end-date-followup" style="font-size: 0.9rem;">إلى تاريخ:</label><input type="date" id="end-date-followup" style="width: 100%; padding: 0.5rem;"></div>
-        <div style="flex: 1 1 auto; align-self: flex-end;"><button id="clear-date-filter-followup-btn" class="button-secondary" style="width: 100%; padding: 0.5rem; font-size: 0.9rem;">مسح التاريخ</button></div>
-
-        <div style="width: 100%; margin-top: 0.5rem;"><label for="packer-customer-search-followup" style="font-size: 0.9rem;">البحث باسم الزبون:</label><input type="text" id="packer-customer-search-followup" placeholder="اكتب اسم الزبون..."></div>
-    </div></div><table><thead><tr><th><input type="checkbox" id="select-all-followup-orders"></th><th>الزبون / الفاتورة</th><th>المنتجات</th><th>الحالة الحالية</th></tr></thead><tbody id="followup-orders-tbody"></tbody></table>`;
-    // --- نهاية التعديل ---
-
-    const renderTableBody = (ordersToRender) => {
-        const tbody = document.getElementById('followup-orders-tbody'), countSpan = document.getElementById('followup-order-count');
-        if (!tbody || !countSpan) return;
-        countSpan.textContent = ordersToRender.length;
-        tbody.innerHTML = ordersToRender.length > 0 ? ordersToRender.map(orderItems => { const firstItem = orderItems[0]; return `<tr><td><input type="checkbox" class="packer-followup-checkbox" data-invoice-id="${firstItem.invoiceId}"></td><td><div>${firstItem.customerName}</div><small>${firstItem.invoiceId}</small></td><td><ul class="item-list-in-table">${orderItems.map(item => `<li>${item.productName} (الكمية: ${item.quantity})</li>`).join('')}</ul></td><td><span class="status-badge ${getStatusClass(firstItem.status)}">${getStatusText(firstItem.status)}</span></td></tr>` }).join('') : `<tr><td colspan="4" style="text-align: center;">لا توجد طلبات للمتابعة تطابق هذا الفلتر.</td></tr>`;
-        attachFollowupViewListeners();
-    };
-    const attachFollowupViewListeners = () => {
-        const bulkUpdateBtn = document.getElementById('bulk-update-btn'), selectAllCheckbox = document.getElementById('select-all-followup-orders'), orderCheckboxes = document.querySelectorAll('.packer-followup-checkbox');
-        const updateButtonState = () => { const checkedCount = document.querySelectorAll('.packer-followup-checkbox:checked').length; if (bulkUpdateBtn) bulkUpdateBtn.disabled = checkedCount === 0, bulkUpdateBtn.textContent = `تحديث المحدد (${checkedCount})`; if (selectAllCheckbox) selectAllCheckbox.checked = checkedCount > 0 && checkedCount === orderCheckboxes.length; };
-        if (selectAllCheckbox) selectAllCheckbox.addEventListener('change', (e => { orderCheckboxes.forEach(checkbox => checkbox.checked = e.target.checked), updateButtonState() }));
-        orderCheckboxes.forEach(checkbox => checkbox.addEventListener('change', updateButtonState));
-        if (bulkUpdateBtn) bulkUpdateBtn.addEventListener('click', handleBulkStatusUpdate);
-        updateButtonState();
-    };
-
-    // --- بداية التعديل: تفعيل الفلاتر (مندوب + بحث + تاريخ) ---
-    const repFilter = document.getElementById('rep-filter-followup');
-    const searchInput = document.getElementById('packer-customer-search-followup');
-    const startDateInput = document.getElementById('start-date-followup');
-    const endDateInput = document.getElementById('end-date-followup');
-    const clearDateBtn = document.getElementById('clear-date-filter-followup-btn');
-    
-    const applyPackerFilters = () => {
-        const selectedRepId = repFilter.value;
-        const searchTerm = searchInput.value.toLowerCase();
-
-        const startDateVal = startDateInput.value;
-        const endDateVal = endDateInput.value;
-        const startDate = startDateVal ? new Date(startDateVal) : null;
-        const endDate = endDateVal ? new Date(endDateVal) : null;
-        
-        if (startDate) startDate.setHours(0, 0, 0, 0);
-        if (endDate) endDate.setHours(23, 59, 59, 999);
-
-        let filteredOrders = allFollowupOrders;
-        
-        if (selectedRepId !== 'all') {
-            filteredOrders = filteredOrders.filter(order => order[0].repId == selectedRepId);
-        }
-        
-        if (searchTerm) {
-            filteredOrders = filteredOrders.filter(order => order[0].customerName.toLowerCase().includes(searchTerm));
-        }
-
-        if (startDate) {
-            filteredOrders = filteredOrders.filter(order => new Date(order[0].created_at) >= startDate);
-        }
-        if (endDate) {
-            filteredOrders = filteredOrders.filter(order => new Date(order[0].created_at) <= endDate);
-        }
-        
-        renderTableBody(filteredOrders);
-    };
-
-    repFilter.addEventListener('change', applyPackerFilters);
-    searchInput.addEventListener('input', applyPackerFilters);
-    startDateInput.addEventListener('change', applyPackerFilters);
-    endDateInput.addEventListener('change', applyPackerFilters);
-    clearDateBtn.addEventListener('click', () => {
-        startDateInput.value = '';
-        endDateInput.value = '';
-        applyPackerFilters();
-    });
-
-    applyPackerFilters(); // العرض الأولي
-    // --- نهاية التعديل ---
-};
-
-
-////////////////////////////////////////////////
-const handleBulkProcessOrders = async (pendingOrders) => {
-    const selectedInvoiceIds = Array.from(document.querySelectorAll('.packer-order-checkbox:checked')).map(cb => cb.dataset.invoiceId);
-    if (selectedInvoiceIds.length === 0) return showToast("الرجاء تحديد طلب واحد على الأقل.", true);
-    const confirmed = await showConfirmationModal(`هل أنت متأكد من تحويل حالة (${selectedInvoiceIds.length}) طلبات إلى "تم التجهيز"؟`);
-    if (!confirmed) return;
-    showLoader();
-    try {
-        const { error } = await supabase.from('sales').update({ status: 'prepared' }).in('invoiceId', selectedInvoiceIds);
-        if (error) throw error;
-        showToast(`تم تحديث حالة (${selectedInvoiceIds.length}) طلبات بنجاح.`);
-        const processedOrdersData = pendingOrders.filter(order => selectedInvoiceIds.includes(order[0].invoiceId));
-        if (processedOrdersData.length > 0) printInvoice(processedOrdersData, 'packing_slip');
-        await fetchAllData();
-        switchPackerTab('pending');
-    } catch (error) {
-        showToast(`فشل تحديث الطلبات: ${error.message}`, true);
-    } finally {
-        hideLoader();
-    }
-};
-
-const handleBulkStatusUpdate = async () => {
-    const newStatus = document.getElementById('bulk-status-changer').value;
-    if (!newStatus) return showToast("الرجاء اختيار الحالة الجديدة من القائمة.", true);
-    const selectedInvoiceIds = Array.from(document.querySelectorAll('.packer-followup-checkbox:checked')).map(cb => cb.dataset.invoiceId);
-    if (selectedInvoiceIds.length === 0) return showToast("الرجاء تحديد طلب واحد على الأقل.", true);
-    const confirmed = await showConfirmationModal(`هل أنت متأكد من تغيير حالة (${selectedInvoiceIds.length}) طلبات إلى "${getStatusText(newStatus)}"?`);
-    if (!confirmed) return;
-    showLoader();
-    try {
-        const { error } = await supabase.from('sales').update({ status: newStatus }).in('invoiceId', selectedInvoiceIds);
-        if (error) throw error;
-        showToast(`تم تحديث حالة (${selectedInvoiceIds.length}) طلبات بنجاح.`);
-        await fetchAllData();
-        switchPackerTab('followup');
-    } catch (error) {
-        showToast(`فشل تحديث الطلبات: ${error.message}`, true);
-    } finally {
-        hideLoader();
-    }
-};
-
-const handleUpdateOrderStatus = async (event, currentTab) => {
-    const select = event.target;
-    const { invoiceId, oldStatus } = select.dataset;
-    const newStatus = select.value;
-    if (newStatus === oldStatus) return;
-    const confirmed = await showConfirmationModal(`هل أنت متأكد من تغيير حالة الطلب كاملاً إلى "${getStatusText(newStatus)}"?`);
-    if (!confirmed) return select.value = oldStatus;
-    showLoader();
-    try {
-        const { error } = await supabase.rpc('update_order_status', { p_invoice_id: invoiceId, p_new_status: newStatus });
-        if (error) throw error;
-        showToast("تم تحديث حالة الطلب بنجاح.");
-        await fetchAllData();
-        switchPackerTab(currentTab);
-    } catch (error) {
-        showToast(`فشل تحديث الحالة: ${error.message}`, true);
-        select.value = oldStatus;
-    } finally {
-        hideLoader();
-    }
-};
-
-// --- Authentication Flow ---
-loginForm.addEventListener('submit',async e=>{e.preventDefault(),showLoader(),messageDiv.textContent="";try{const{data:e,error:t}=await supabase.auth.signInWithPassword({email:document.getElementById("email").value,password:document.getElementById("password").value});if(t)throw t;const{data:n,error:a}=await supabase.from("users").select("*").eq("id",e.user.id).single();if(a)throw a;state.currentUser=n,"admin"===n.role?await renderAdminApp():"rep"===n.role?await renderRepApp():"packer"===n.role?await renderPackerApp():(()=>{throw new Error("صلاحية المستخدم غير معروفة.")})()}catch(e){messageDiv.textContent=`فشل تسجيل الدخول: ${e.message}`,messageDiv.className="error"}finally{hideLoader()}});
-const handleLogout=async()=>{showLoader(),await supabase.auth.signOut(),state.currentUser=null,adminContainer.classList.add("hidden"),repContainer.classList.add("hidden"),packerContainer.classList.add("hidden"),adminContainer.innerHTML="",repContainer.innerHTML="",packerContainer.innerHTML="",loginSection.classList.remove("hidden"),messageDiv.textContent="تم تسجيل الخروج.",messageDiv.className="success",hideLoader()};
-//اضافة خانة للبحث عن المنتج حسب الاسم في واجهة المندوب عند اضافة فاتورة
-
