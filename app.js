@@ -2,8 +2,8 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
 // 1. Supabase Setup
 // NOTE: For security in a real app, the service role key should NEVER be exposed here.
-const SUPABASE_URL = 'https://iqfxbunxrnvmcsazmwvo.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlxZnhidW54cm52bWNzYXptd3ZvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjAxOTI1NDEsImV4cCI6MjA3NTc2ODU0MX0.uVj2ioxJ5oaPsxLVbCaN3h1C3T0Wt8AUyobc5nkIE5c';
+const SUPABASE_URL = 'https://qibqubewsgamxvkkbyue.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFpYnF1YmV3c2dhbXh2a2tieXVlIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MTU4Mjk5MywiZXhwIjoyMDc3MTU4OTkzfQ.9czphc7my5zfTwQL30v8IKGr577CJF6hv5QEI3f2Zqs';
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // --- Global State ---
@@ -551,3 +551,4 @@ const handleDeleteOrder = async (invoiceId) => {
 
 // **السطر الذي يجب إضافته:** اجعل الدالة متاحة للنطاق العام للنافذة
 window.handleDeleteOrder = handleDeleteOrder;
+
